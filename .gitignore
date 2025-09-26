@@ -1,0 +1,54 @@
+# ----------------------------
+# ROS 2 build and install dirs
+# ----------------------------
+build/
+install/
+log/
+
+# Colcon-specific
+.colcon/
+
+# ----------------------------
+# PX4 build artifacts
+# ----------------------------
+build_px4/
+px4_build/
+PX4-Autopilot/build/
+PX4-Autopilot/logs/
+
+# ----------------------------
+# CMake and general build files
+# ----------------------------
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# ----------------------------
+# Python
+# ----------------------------
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+
+# ----------------------------
+# VS Code
+# ----------------------------
+.vscode/
+.history/
+
+# ----------------------------
+# OS files
+# ----------------------------
+.DS_Store
+Thumbs.db
+
+# ----------------------------
+# Other local configs (optional)
+# ----------------------------
+.env
+*.swp
+*.swo
