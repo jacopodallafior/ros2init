@@ -23,7 +23,9 @@ setup(
         ],
     },
     entry_points={
-        'console_scripts': ["arm_and_takeoff = drone_takeoff.takeoff:main"
+        'console_scripts': ["arm_and_takeoff = drone_takeoff.takeoff:main",
+                            "PID_controller = drone_takeoff.PID_ros2:main",
+                            "PID_controller_cascade = drone_takeoff.PID_cascade:main"
         ],
     },
 )
