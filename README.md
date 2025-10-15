@@ -9,7 +9,6 @@ This project implements a **LiDAR-guided UAV navigation system** using ROS 2 and
 
 ## 📸 Project Overview
 
-*(Add your images here)*
 
 - **Drone in Gazebo near the column:**  
   ![Drone orbiting the column in Gazebo](images/droneapproach.png)
