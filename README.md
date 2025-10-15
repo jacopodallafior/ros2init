@@ -12,10 +12,10 @@ This project implements a **LiDAR-guided UAV navigation system** using ROS 2 and
 *(Add your images here)*
 
 - **Drone in Gazebo near the column:**  
-  ![Drone orbiting the column in Gazebo](images/Qgroundcontroltraj.png)
+  ![Drone orbiting the column in Gazebo](images/droneapproach.png)
 
 - **QGroundControl visualization of the circular path:**  
-  ![QGroundControl circular trajectory](images/droneapproach.png)
+  ![QGroundControl circular trajectory](images/Qgroundcontroltraj.png)
 
 ---
 
@@ -50,7 +50,9 @@ The drone is equipped with a 2D LiDAR sensor that continuously scans the environ
 
 Once the **LiDAR** detects and stabilizes the position of the object (the column), the **center** of the circular trajectory is defined as the **global coordinates** of that detected object.
 
-### 3. Circular Trajectory Planning Around the Obje
+---
+
+### 3. Circular Trajectory Planning Around the Object
 After detecting the object, the drone transitions to a **CIRCULAR_PATH** phase.
 
 **Algorithm**:
