@@ -29,9 +29,7 @@ It uses feedback from PX4’s `/vehicle_local_position` topic and aims to minimi
 **Workflow:**
 - Compute error between reference position and actual drone position.
 - Apply the PID law:  
-  \[
-  u(t) = K_p e(t) + K_i \int e(t) dt + K_d \frac{de(t)}{dt}
-  \]
+ `u(t) = Kp * e(t) + Ki * ∫ e(t) dt + Kd * de(t)/dt`
 - Generate **velocity setpoints** and publish them to PX4 (`/fmu/in/trajectory_setpoint`).
 
 🧩 *Status:*  
