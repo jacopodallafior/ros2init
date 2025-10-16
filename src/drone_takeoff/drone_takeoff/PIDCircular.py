@@ -12,11 +12,11 @@ import numpy as np
 
 
 
-class Trajectoryplanning(Node):
+class TrajectoryplanningPID(Node):
 
 
     def __init__(self):
-        super().__init__('Circulartrajectory')
+        super().__init__('CirculartrajectoryPID')
         qos_profile = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,  # match PX4 publisher
             durability=DurabilityPolicy.VOLATILE,
@@ -38,10 +38,10 @@ class Trajectoryplanning(Node):
         self.Kpz = 0.9
         self.Kiz = 0.1
         self.Kdz = 0.3
-        self.Kpx = 0.2
+        self.Kpx = 0.3
         self.Kix = 0.1
         self.Kdx = 0.5
-        self.Kpy = 0.1
+        self.Kpy = 0.3
         self.Kiy = 0.1
         self.Kdy = 0.5
         self.Vmax = 1.0
@@ -310,7 +310,7 @@ class Trajectoryplanning(Node):
             dist_err = math.hypot(dx, dy)
 
             # check if we reached it
-            if dist_err < 0.25:
+            if dist_err < 0.45:
                 # advance to the next point on the circle
                 self.phi = self._wrap_pi(self.phi + self.delta_phi)
                 self.get_logger().info(f"Reached WP, advancing φ → {math.degrees(self.phi):.1f}°")
@@ -422,7 +422,7 @@ class Trajectoryplanning(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = Trajectoryplanning()
+    node = TrajectoryplanningPID()
     rclpy.spin(node)
     rclpy.shutdown()
 

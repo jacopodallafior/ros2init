@@ -36,8 +36,8 @@ class PIDcontrol(Node):
         self.error_y = 0.0
         self.error_z = 0.0
 
-        self.Kpzv = 4.1
-        self.Kizv = 25.1
+        self.Kpzv = 2.1
+        self.Kizv = 16.1
         self.Kdzv = 0.9
         self.Kpxv = 0.05
         self.Kixv = 0.1
@@ -182,6 +182,7 @@ class PIDcontrol(Node):
         msg.acceleration = True
         msg.attitude = False
         msg.body_rate = False
+
         self.offboard_pub.publish(msg)
 
     def publish_setpoint(self):
