@@ -32,8 +32,27 @@ class Trajectoryplanning(Node):
         self.error_z = 0.0
         self.error_y = 0.0
         self.error_x = 0.0
+        self.error_yaw = 0.0
         self.desired_yaw =  0.0
         self.yaw_target = 0.0
+        self.Kpz = 0.9
+        self.Kiz = 0.1
+        self.Kdz = 0.3
+        self.Kpx = 0.2
+        self.Kix = 0.1
+        self.Kdx = 0.5
+        self.Kpy = 0.1
+        self.Kiy = 0.1
+        self.Kdy = 0.5
+        self.Vmax = 1.0
+
+        self.vxa = 0
+        self.vya = 0
+        self.vza = 0   
+        self.yawa = 0  
+        self.prev_time = time.time()
+        self.I = [0.0, 0.0, 0.0, 0.0]
+
         
         self.n_points = 36
         self.wp_tol = 0.25          # [m] reach tolerance
@@ -67,7 +86,7 @@ class Trajectoryplanning(Node):
 
         # Timers
         self.create_timer(0.1, self.publish_offboard_mode)   # 10 Hz
-        self.create_timer(0.1,  lambda: self.publish_setpoint(coordinate=self.current_position))        # 10 Hz
+        self.create_timer(0.1,  lambda: self.publish_setpoint())        # 10 Hz
         self.arm_timer = self.create_timer(2.0, self.arm)                     # arm after 2 s
         # REMOVE the fixed offboard timer:  switch after N setpoints from inside publish_setpoint()
         self.offboard_tiemr = self.create_timer(3.0, self.set_offboard_mode)   #switch to offboard after 3 s
@@ -90,13 +109,13 @@ class Trajectoryplanning(Node):
         self.global_z = msg.z
         self.global_yaw = msg.heading
         print(f"l'altezza in z è {self.global_z}")
-       
-        # print(f"la posizione è {self.current_position}")
+       # print(f"la posizione è {self.current_position}")
         
 
         self.error_x = self.current_position["x"] - msg.x 
         self.error_y = self.current_position["y"] - msg.y
         self.error_z = self.current_position["z"] - msg.z
+        self.error_yaw = self.yaw_target - msg.heading
 
         print(f"la posizione in x è {msg.x}")
         print(f"la posizione in y è {msg.y}")
@@ -106,8 +125,8 @@ class Trajectoryplanning(Node):
     def _wrap_pi(self, a):
     
         return (a + math.pi) % (2.0 * math.pi) - math.pi
-        
-
+    
+    
     def lidar_callback(self, msg: LaserScan):
         # ---------- 0) altitude first ----------
         if not hasattr(self, "phase"):
@@ -309,26 +328,59 @@ class Trajectoryplanning(Node):
             # diagnostics
             if abs(d_curr - r_star) > 0.15:
                 self.get_logger().warn(f"Range error: {d_curr:.2f} vs {r_star:.2f}")
+        
+    def controller_PID(self):
+
+        now = time.time()
+        dt = now - self.prev_time
+        self.prev_time = now
+
+        self.I[0] += self.error_x * dt
+        self.I[1] += self.error_y * dt
+        self.I[2] += self.error_z * dt
+        self.I[3] += self.error_yaw * dt
+
+        dex_dt = -self.vxa
+        dey_dt = -self.vya
+        dez_dt = -self.vza
+        deyaw_dt = -self.yawa
+
+        self.vxa =  self.Kpx*self.error_x + self.Kdx*dex_dt + self.Kix*self.I[0] 
+        self.vya =  self.Kpy*self.error_y + self.Kdy*dey_dt + self.Kiy*self.I[1]
+        self.vza =  self.Kpz*self.error_z + self.Kdz*dez_dt + self.Kiz*self.I[2]
+        self.yawa =  self.Kpx*self.error_yaw + self.Kdx*deyaw_dt + self.Kix*self.I[3]
+
+
+
+        print(f"la tua velocità in x è {self.vxa}")
+        print(f"la tua velocità in y è {self.vya}")
+        print(f"la tua velocità in z è {self.vza}")
+
        
 
 
     def publish_offboard_mode(self):
         msg = OffboardControlMode()
-        msg.position = True   # we want to control position
-        msg.velocity = False
+        msg.position = False   # we want to control position
+        msg.velocity = True
         msg.acceleration = False
         msg.attitude = False
         msg.body_rate = False
         self.offboard_pub.publish(msg)
 
-    def publish_setpoint(self, coordinate:dict= None):
+    def publish_setpoint(self):
+        self.controller_PID()
         sp = TrajectorySetpoint()
         #sp.timestamp = self._now_us()
+        sp.velocity[0] = self.vxa
+        sp.velocity[1] = self.vya
+        sp.velocity[2] = self.vza
+        sp.yawspeed = self.yawa
      
-        sp.position[0] = coordinate["x"]
-        sp.position[1] = coordinate["y"]
-        sp.position[2] = coordinate["z"]
-        sp.yaw = self.yaw_target
+        #sp.position[0] = coordinate["x"]
+        #sp.position[1] = coordinate["y"]
+        #sp.position[2] = coordinate["z"]
+        #sp.yaw = self.yaw_target
         '''
         sp.velocity[0] = math.nan; sp.velocity[1] = math.nan; sp.velocity[2] = math.nan
         sp.acceleration[0] = math.nan; sp.acceleration[1] = math.nan; sp.acceleration[2] = math.nan
