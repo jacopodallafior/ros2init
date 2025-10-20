@@ -22,9 +22,9 @@ class PIDcontrol(Node):
             depth=1
         )
 
-        self.Kpz = 0.9
-        self.Kiz = 0.1
-        self.Kdz = 0.3
+        self.Kpz = 0.5
+        self.Kiz = 0.2
+        self.Kdz = 0.4
         self.Kpx = 0.2
         self.Kix = 0.1
         self.Kdx = 0.5
@@ -125,8 +125,8 @@ class PIDcontrol(Node):
     def publish_offboard_mode(self):
         msg = OffboardControlMode()
         msg.position = False   # we want to control velocity
-        msg.velocity = True
-        msg.acceleration = False
+        msg.velocity = False
+        msg.acceleration = True
         msg.attitude = False
         msg.body_rate = False
         self.offboard_pub.publish(msg)
@@ -136,9 +136,9 @@ class PIDcontrol(Node):
         self.controller_PID()
         sp = TrajectorySetpoint()
      
-        sp.velocity[0] = self.vxa
-        sp.velocity[1] = self.vya
-        sp.velocity[2] = self.vza
+        sp.acceleration[0] = self.vxa
+        sp.acceleration[1] = self.vya
+        sp.acceleration[2] = self.vza
         #sp.yaw = yaw
  # z (NED, so -10 = climb up 10 m)
         sp.yaw = 0.0
