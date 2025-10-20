@@ -40,11 +40,11 @@ class PIDcontrol(Node):
         self.Kiz = 0.02
         self.Kdz = 0.7#0.5
         
-        self.Kpx = 0.6
-        self.Kdx = 0.4
+        self.Kpx = 0.3
+        self.Kdx = 0.6
         self.Kix = 0.0
-        self.Kpy = 0.6
-        self.Kdy = 0.4
+        self.Kpy = 0.1
+        self.Kdy = 0.6
         self.Kiy = 0.0
 
         self.Vmax = 1.0
@@ -72,10 +72,10 @@ class PIDcontrol(Node):
 
         self.reftraj = [
             [0.0,0.0,-5.0],   # decollo a 5m
-            [0.0,0.0,-5.0],   # avanti 5m
-            [0.0,0.0,-5.0],   # diagonale
+            [5.0,0.0,-5.0],   # avanti 5m
+            [5.0,5.0,-5.0],   # diagonale
             [0.0,0.0,-5.0],
-            [0.0,0.0,-5.0]    # ritorno
+            [0.0,0.0,0.0]    # ritorno
         ]
 
        
@@ -106,12 +106,18 @@ class PIDcontrol(Node):
         print(f"l'errore in y è {self.error_y}")
         print(f"l'errore in z è {self.error_z}")
         # print(f"la distanza {distance}")
-        if abs(self.error_z) < 0.7 and abs(self.error_x) <0.7 and abs(self.error_y) < 0.7:
-
-            self.refcount += 1
+        if (abs(self.error_x) < 0.5 and abs(self.error_y) < 0.5 and abs(self.error_z) < 0.5):
+            if not hasattr(self, "inside_since"):
+                self.inside_since = time.time()   # just entered
+            elif time.time() - self.inside_since > 1.0:  # stayed 1s
+               self.refcount += 1
             if self.refcount < len(self.reftraj):
-                self.refpoint = self.reftraj[self.refcount]
-                print(f"POSIZIONE RAGGIUNTA")
+                    self.refpoint = self.reftraj[self.refcount]
+                    print("POSIZIONE RAGGIUNTA")
+        else:
+    # reset timer if you go out of tolerance
+            if hasattr(self, "inside_since"):
+                del self.inside_since
             
             
 
@@ -154,7 +160,7 @@ class PIDcontrol(Node):
         roll_d, pitch_d, thrust_norm
         """
         # include gravity, get total specific force in NED
-        fx, fy, fz = -ax, -ay, G - az#ax, ay, az + G
+        fx, fy, fz = -ax, ay, G - az#ax, ay, az + G
         
 
         # Closed-form (ZYX: yaw-pitch-roll)
@@ -234,7 +240,7 @@ class PIDcontrol(Node):
 
 
         #ax, ay, az = self.axPID, self.ayPID, self.azPID
-        ax, ay, az = self.axPID, self.ayPID, az_cmd
+        ax, ay, az = self.axPIDclam, self.ayPIDclam, az_cmd
 
         # 2) accel + yaw -> roll, pitch, thrust
         roll_d, pitch_d, thrust_norm = self.accel_yaw_to_rpy(ax, ay, az, self.yaw_d)
