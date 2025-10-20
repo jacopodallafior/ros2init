@@ -14,6 +14,11 @@ G = 9.81                          # m/s^2
 TILT_LIMIT_RAD = math.radians(35) # safety tilt limit
 MIN_THRUST = 0.05                 # normalized thrust limits for PX4
 MAX_THRUST = 0.9
+HOVER_THRUST = 0.75   # da tarare; 0.5–0.6 in SITL è tipico
+I_MAX = 3.0   
+A_XY_MAX   = 4.0   # m/s^2 limit for horizontal accel command
+I_XY_MAX   = 2.0   # cap on XY integrators
+I_LEAK_TAU = 5.0   # s, for gentle integral leakage
 
 def clamp(v, lo, hi): 
     return max(lo, min(hi, v))
@@ -31,15 +36,17 @@ class PIDcontrol(Node):
             depth=1
         )
 
-        self.Kpz = 0.8#1.6
-        self.Kiz = 0.08
+        self.Kpz = 0.6#1.6
+        self.Kiz = 0.02
         self.Kdz = 0.7#0.5
-        self.Kpx = 0.2
-        self.Kix = 0.1
-        self.Kdx = 0.5
-        self.Kpy = 0.1
-        self.Kiy = 0.1
-        self.Kdy = 0.5
+        
+        self.Kpx = 0.6
+        self.Kdx = 0.4
+        self.Kix = 0.0
+        self.Kpy = 0.6
+        self.Kdy = 0.4
+        self.Kiy = 0.0
+
         self.Vmax = 1.0
         self.error_x = 0.0
         self.error_y = 0.0
@@ -112,12 +119,12 @@ class PIDcontrol(Node):
     def controller_PID_position(self):
 
         now = time.time()
-        dt = now - self.prev_time
+        self.dt = now - self.prev_time
         self.prev_time = now
 
-        self.I[0] += self.error_x * dt
-        self.I[1] += self.error_y * dt
-        self.I[2] += self.error_z * dt
+      #  self.I[0] += self.error_x * self.dt
+       # self.I[1] += self.error_y * self.dt
+        #self.I[2] += self.error_z * self.dt
 
         dex_dt = -self.vxa
         dey_dt = -self.vya
@@ -125,13 +132,17 @@ class PIDcontrol(Node):
 
         self.axPID =  self.Kpx*self.error_x + self.Kdx*dex_dt + self.Kix*self.I[0] 
         self.ayPID =  self.Kpy*self.error_y + self.Kdy*dey_dt + self.Kiy*self.I[1]
-        self.azPID =  self.Kpz*self.error_z + self.Kdz*dez_dt + self.Kiz*self.I[2]
+        #self.azPID =  self.Kpz*self.error_z + self.Kdz*dez_dt + self.Kiz*self.I[2]
+        self.azPD =  self.Kpz*self.error_z + self.Kdz*dez_dt 
+
+        self.axPIDclam = clamp(self.axPID, -A_XY_MAX, A_XY_MAX)
+        self.ayPIDclam = clamp(self.ayPID, -A_XY_MAX, A_XY_MAX)
 
 
 
         print(f"la tua acc in x è {self.axPID}")
         print(f"la tua acc in y è {self.ayPID}")
-        print(f"la tua acc in z è {self.azPID}")
+        print(f"la tua acc in z è {self.azPD}")
 
 
     def accel_yaw_to_rpy(self, ax, ay, az, yaw_d):
@@ -186,7 +197,44 @@ class PIDcontrol(Node):
         self.controller_PID_position()
        
         ap= VehicleAttitudeSetpoint()
-        ax, ay, az = self.axPID, self.ayPID, self.azPID
+
+
+
+        az_cmd = self.azPD + self.Kiz * self.I[2]   # accel desiderata (+giù)
+
+        # mappa con hover: az=0 -> hover
+        u_unsat = HOVER_THRUST * (1.0 - az_cmd / G)
+        u = clamp(u_unsat, MIN_THRUST, MAX_THRUST)
+
+        # anti-windup (blocca I se saturato nella direzione che peggiora)
+        sat_hi = (u >= MAX_THRUST - 1e-6) and (az_cmd < 0)  # chiedi ancora più su
+        sat_lo = (u <= MIN_THRUST + 1e-6) and (az_cmd > 0)  # chiedi ancora più giù
+        near_sp = (abs(self.error_z) < 0.05 and abs(self.vza) < 0.1)
+
+        if not (sat_hi or sat_lo) and not near_sp:
+            self.I[2] += self.error_z * self.dt
+            self.I[2] = clamp(self.I[2], -I_MAX, I_MAX)
+        else:
+            # leakage: scarica lentamente l'integratore per evitare derive lente
+            self.I[2] *= (1.0 - self.dt/5.0)
+
+        near_xy = (abs(self.error_x) < 0.3 and abs(self.vxa) < 0.5)
+        if self.Kix > 0.0:
+            if abs(self.axPIDclam - self.axPID) < 1e-6 and near_xy:
+                self.I[0] = clamp(self.I[0] + self.error_x*self.dt, -I_XY_MAX, I_XY_MAX)
+            else:
+                self.I[0] *= (1.0 - self.dt/I_LEAK_TAU)
+
+        if self.Kiy > 0.0:
+            near_yy = (abs(self.error_y) < 0.3 and abs(self.vya) < 0.5)
+            if abs(self.ayPIDclam - self.ayPID) < 1e-6 and near_yy:
+                self.I[1] = clamp(self.I[1] + self.error_y*self.dt, -I_XY_MAX, I_XY_MAX)
+            else:
+                self.I[1] *= (1.0 - self.dt/I_LEAK_TAU)
+
+
+        #ax, ay, az = self.axPID, self.ayPID, self.azPID
+        ax, ay, az = self.axPID, self.ayPID, az_cmd
 
         # 2) accel + yaw -> roll, pitch, thrust
         roll_d, pitch_d, thrust_norm = self.accel_yaw_to_rpy(ax, ay, az, self.yaw_d)
@@ -196,16 +244,18 @@ class PIDcontrol(Node):
 
         
         ap.timestamp = int(self.get_clock().now().nanoseconds//1000)
-        ap.q_d = [1.0,0.0,0.0,0.0]# [qd[0], qd[1], qd[2], qd[3]] 
+        ap.q_d = [qd[0], qd[1], qd[2], qd[3]] # [1.0,0.0,0.0,0.0]# 
 
         # thrust in FRD body frame: z is forward-right-down, so upward thrust is negative z
         ap.thrust_body[0] = 0.0
         ap.thrust_body[1] = 0.0
         #takeoff_thrust = 0.8
-        #ap.thrust_body[2] = -takeoff_thrust
-        ap.thrust_body[2] = -clamp(thrust_norm, MIN_THRUST, MAX_THRUST)
+        ap.thrust_body[2] = -u
+        #ap.thrust_body[2] = -clamp(thrust_norm, MIN_THRUST, MAX_THRUST)
         ap.yaw_sp_move_rate = 0.0
         self.thrust_debug_pub.publish(Float32(data=float(ap.thrust_body[2])))
+
+        
 
         self.att_sp_pub.publish(ap)
 
