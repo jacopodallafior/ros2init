@@ -40,7 +40,7 @@ class PIDcontrol(Node):
         self.Kiz = 0.02
         self.Kdz = 0.7#0.5
         
-        self.Kpx = 0.3
+        self.Kpx = 0.2
         self.Kdx = 0.6
         self.Kix = 0.0
         self.Kpy = 0.1
@@ -72,8 +72,8 @@ class PIDcontrol(Node):
 
         self.reftraj = [
             [0.0,0.0,-5.0],   # decollo a 5m
-            [5.0,0.0,-5.0],   # avanti 5m
-            [5.0,5.0,-5.0],   # diagonale
+            [50.0,0.0,-5.0],   # avanti 5m
+            [50.0,50.0,-5.0],   # diagonale
             [0.0,0.0,-5.0],
             [0.0,0.0,0.0]    # ritorno
         ]
