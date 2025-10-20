@@ -5,6 +5,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from px4_msgs.msg import OffboardControlMode, TrajectorySetpoint, VehicleCommand, VehicleLocalPosition, VehicleStatus,VehicleAttitudeSetpoint
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
+from std_msgs.msg import Float32
 import numpy as np
 import time
 import math
@@ -30,9 +31,9 @@ class PIDcontrol(Node):
             depth=1
         )
 
-        self.Kpz = 0.02
-        self.Kiz = 0.01
-        self.Kdz = 0.5
+        self.Kpz = 0.8#1.6
+        self.Kiz = 0.08
+        self.Kdz = 0.7#0.5
         self.Kpx = 0.2
         self.Kix = 0.1
         self.Kdx = 0.5
@@ -54,6 +55,7 @@ class PIDcontrol(Node):
         self.offboard_pub = self.create_publisher(OffboardControlMode, '/fmu/in/offboard_control_mode', qos_profile)
         self.setpoint_pub = self.create_publisher(TrajectorySetpoint, '/fmu/in/trajectory_setpoint', qos_profile)
         self.att_sp_pub = self.create_publisher(VehicleAttitudeSetpoint, '/fmu/in/vehicle_attitude_setpoint_v1', qos_profile)
+        self.thrust_debug_pub = self.create_publisher(Float32, '/debug/thrust_z', 10)
 
         self.prev_time = time.time()
         self.I = [0.0, 0.0, 0.0]
@@ -127,9 +129,9 @@ class PIDcontrol(Node):
 
 
 
-        print(f"la tua velocità in x è {self.axPID}")
-        print(f"la tua velocità in y è {self.ayPID}")
-        print(f"la tua velocità in z è {self.azPID}")
+        print(f"la tua acc in x è {self.axPID}")
+        print(f"la tua acc in y è {self.ayPID}")
+        print(f"la tua acc in z è {self.azPID}")
 
 
     def accel_yaw_to_rpy(self, ax, ay, az, yaw_d):
@@ -141,7 +143,8 @@ class PIDcontrol(Node):
         roll_d, pitch_d, thrust_norm
         """
         # include gravity, get total specific force in NED
-        fx, fy, fz = ax, ay, az + G
+        fx, fy, fz = -ax, -ay, G - az#ax, ay, az + G
+        
 
         # Closed-form (ZYX: yaw-pitch-roll)
         pitch_d = math.atan2( fx*math.cos(yaw_d) + fy*math.sin(yaw_d),  fz )
@@ -202,6 +205,7 @@ class PIDcontrol(Node):
         #ap.thrust_body[2] = -takeoff_thrust
         ap.thrust_body[2] = -clamp(thrust_norm, MIN_THRUST, MAX_THRUST)
         ap.yaw_sp_move_rate = 0.0
+        self.thrust_debug_pub.publish(Float32(data=float(ap.thrust_body[2])))
 
         self.att_sp_pub.publish(ap)
 
