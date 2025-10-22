@@ -7,11 +7,27 @@ from px4_msgs.msg import OffboardControlMode, TrajectorySetpoint, VehicleCommand
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 import numpy as np
 import time
+import math
 
-
-
+def generate_lissajous_8(center=(0.0, 0.0), A=25.0, B=25.0, z=-5.0,
+                         npts=400, phase=0.0):
+        """
+        Classic 8 using a Lissajous curve:
+        x = A * sin(t)
+        y = B * sin(2t + phase)
+        Span is ~2A by ~2B (so A=B=25 -> ~50 m x/y span).
+        """
+        cx, cy = center
+        pts = []
+        for k in range(npts):
+            t = 2.0 * math.pi * (k / npts)
+            x = cx + A * math.sin(t)
+            y = cy + B * math.sin(2.0 * t + phase)
+            pts.append([x, y, z])
+        return pts
 class PIDcontrol(Node):
 
+    
 
     def __init__(self):
         super().__init__('PID_controller')
@@ -51,13 +67,15 @@ class PIDcontrol(Node):
     
 
 
-        self.reftraj = [
-            [0.0,0.0,-5.0],   # decollo a 5m
-            [50.0,0.0,-5.0],   # avanti 5m
-            [50.0,50.0,-5.0],   # diagonale
-            [0.0,0.0,-5.0],
-            [0.0,0.0,0.0]    # ritorno
-        ]
+        self.reftraj = [[0.0, 0.0, -5.0]] + generate_lissajous_8(
+            center=(0.0, 0.0),
+            A=25.0,      # half-width ≈ 25 m  -> total span ≈ 50 m
+            B=25.0,      # half-height ≈ 25 m -> total span ≈ 50 m
+            z=-5.0,
+            npts=400,    # more points = smoother stepping for your tolerance logic
+            phase=0.0    # try math.pi/2 to rotate the lobes if you prefer
+        )
+
 
        
         self.refcount = 0
@@ -73,8 +91,7 @@ class PIDcontrol(Node):
 
         self.current_position_recived = self.create_subscription(VehicleLocalPosition, '/fmu/out/vehicle_local_position_v1',self.callback_pos,qos_profile)
 
-
-
+    
     def callback_pos(self,msg:VehicleLocalPosition):
         self.vxa = msg.vx
         self.vya = msg.vy
@@ -87,12 +104,16 @@ class PIDcontrol(Node):
         print(f"l'errore in y è {self.error_y}")
         print(f"l'errore in z è {self.error_z}")
         # print(f"la distanza {distance}")
-        if abs(self.error_z) < 0.7 and abs(self.error_x) <0.7 and abs(self.error_y) < 0.7:
-
-            self.refcount += 1
-            if self.refcount < len(self.reftraj):
+        if (abs(self.error_x) < 0.5 and abs(self.error_y) < 0.5 and abs(self.error_z) < 0.5):
+            if not hasattr(self, "inside_since"):
+                self.inside_since = time.time()
+            elif time.time() - self.inside_since > 0.3:   # shorter dwell
+                self.refcount = (self.refcount + 1) % len(self.reftraj)  # <-- loop
                 self.refpoint = self.reftraj[self.refcount]
-                print(f"POSIZIONE RAGGIUNTA")
+                print("WAYPOINT REACHED")
+        else:
+            if hasattr(self, "inside_since"):
+                del self.inside_since
             
             
 

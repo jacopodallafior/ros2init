@@ -3,7 +3,7 @@
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
-from px4_msgs.msg import OffboardControlMode, TrajectorySetpoint, VehicleCommand, VehicleLocalPosition, VehicleStatus,VehicleAttitudeSetpoint
+from px4_msgs.msg import OffboardControlMode, TrajectorySetpoint, VehicleCommand, VehicleLocalPosition,VehicleAttitude, VehicleTorqueSetpoint,VehicleAngularVelocity,VehicleAttitudeSetpoint,VehicleThrustSetpoint
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from std_msgs.msg import Float32
 import numpy as np
@@ -64,6 +64,11 @@ class PIDcontrol(Node):
         self.att_sp_pub = self.create_publisher(VehicleAttitudeSetpoint, '/fmu/in/vehicle_attitude_setpoint_v1', qos_profile)
         self.thrust_debug_pub = self.create_publisher(Float32, '/debug/thrust_z', 10)
 
+    
+        self.torque_pub   = self.create_publisher(VehicleTorqueSetpoint, '/fmu/in/vehicle_torque_setpoint', qos_profile)
+        self.thrust_pub   = self.create_publisher(VehicleThrustSetpoint, '/fmu/in/vehicle_thrust_setpoint', qos_profile)
+
+
         self.prev_time = time.time()
         self.I = [0.0, 0.0, 0.0]
 
@@ -88,10 +93,18 @@ class PIDcontrol(Node):
         self.create_timer(0.02,  lambda: self.publish_setpoint())        # 10 Hz
         self.arm_timer = self.create_timer(2.0, self.arm)                     # arm after 2 s
         self.offboard_tiemr = self.create_timer(3.0, self.set_offboard_mode)       # switch to offboard after 3 s
-
+        
 
         self.current_position_recived = self.create_subscription(VehicleLocalPosition, '/fmu/out/vehicle_local_position_v1',self.callback_pos,qos_profile)
+        self.create_subscription(VehicleAttitude, '/fmu/out/vehicle_attitude', self.cb_att, qos_profile)
+        self.create_subscription(VehicleAngularVelocity, '/fmu/out/vehicle_angular_velocity', self.cb_gyro, qos_profile)
 
+    def cb_att(self, msg: VehicleAttitude):
+        self.q_now = [msg.q[0], msg.q[1], msg.q[2], msg.q[3]]
+
+    def cb_gyro(self, msg: VehicleAngularVelocity):
+        # PX4 provides body rates in rad/s, FRD
+        self.omega_b = [msg.xyz[0], msg.xyz[1], msg.xyz[2]]
 
 
     def callback_pos(self,msg:VehicleLocalPosition):
@@ -196,6 +209,7 @@ class PIDcontrol(Node):
         msg.acceleration = False
         msg.attitude = True
         msg.body_rate = False
+        msg.thrust_and_torque = False
         self.offboard_pub.publish(msg)
 
     def publish_setpoint(self):
@@ -257,10 +271,10 @@ class PIDcontrol(Node):
         ap.thrust_body[1] = 0.0
         #takeoff_thrust = 0.8
         ap.thrust_body[2] = -u
-        #ap.thrust_body[2] = -clamp(thrust_norm, MIN_THRUST, MAX_THRUST)
+        #ap.thrust_body[2] = -clamp(HOVER_THRUST*thrust_norm, MIN_THRUST, MAX_THRUST)
         ap.yaw_sp_move_rate = 0.0
         self.thrust_debug_pub.publish(Float32(data=float(ap.thrust_body[2])))
-
+        print(f"Thurst che alza = {-u}, l'altr = {ap.thrust_body[2]}")
         
 
         self.att_sp_pub.publish(ap)
