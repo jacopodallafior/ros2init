@@ -3,7 +3,7 @@
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
-from px4_msgs.msg import OffboardControlMode, TrajectorySetpoint, VehicleCommand, VehicleLocalPosition,VehicleAttitude, VehicleTorqueSetpoint,VehicleAngularVelocity,VehicleAttitudeSetpoint,VehicleThrustSetpoint
+from px4_msgs.msg import OffboardControlMode, TrajectorySetpoint, VehicleCommand, VehicleLocalPosition,VehicleAttitude,VehicleTorqueSetpoint,VehicleOdometry, VehicleThrustSetpoint, VehicleStatus,VehicleAttitudeSetpoint
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from std_msgs.msg import Float32
 import numpy as np
@@ -22,6 +22,26 @@ I_LEAK_TAU = 5.0   # s, for gentle integral leakage
 
 def clamp(v, lo, hi): 
     return max(lo, min(hi, v))
+
+def quat_to_euler_zyx(q):
+        # q = [w, x, y, z], world←body (PX4)
+        w, x, y, z = q
+        # ZYX (yaw-pitch-roll): yaw ψ about Z, pitch θ about Y, roll φ about X
+        # guard numerical drift
+        s = -2.0*(x*z - w*y)
+        s = max(-1.0, min(1.0, s))
+        pitch = math.asin(s)  # θ
+
+        roll  = math.atan2( 2.0*(y*z + w*x), w*w - x*x - y*y + z*z )  # φ
+        yaw   = math.atan2( 2.0*(x*y + w*z), w*w + x*x - y*y - z*z )  # ψ
+        return roll, pitch, yaw
+
+def wrap_pi(a):
+        # wrap to [-pi, pi]
+        a = (a + math.pi) % (2.0*math.pi) - math.pi
+        return a
+
+
 
 
 class PIDcontrol(Node):
@@ -55,6 +75,17 @@ class PIDcontrol(Node):
         self.vxa = 0
         self.vya = 0
         self.vza = 0   
+        self.q = np.array([1.0, 0.0, 0.0, 0.0], dtype=float)    # current attitude (w, x, y, z), world←body
+        self.omega = np.array([0.0, 0.0, 0.0], dtype=float)     # [p, q, r] rad/s in FRD
+        self.I_att = np.array([0.0, 0.0, 0.0], dtype=float)     # integral on attitude error (optional)
+
+        self.Kp_eul = np.array([3.0, 3.0, 1.0])     # on [roll, pitch, yaw] errors
+        self.Kd_body = np.array([0.15, 0.15, 0.10]) # damping on [p,q,r]
+        self.Ki_eul = np.array([0.0, 0.0, 0.0])     # optional; start at 0
+        self.I_eul = np.array([0.0, 0.0, 0.0])
+        self.I_EUL_MAX = 0.3
+        self.TORQUE_MAX = np.array([1.0, 1.0, 1.0]) # normalized limits
+
 
         
         # Publishers
@@ -63,10 +94,8 @@ class PIDcontrol(Node):
         self.setpoint_pub = self.create_publisher(TrajectorySetpoint, '/fmu/in/trajectory_setpoint', qos_profile)
         self.att_sp_pub = self.create_publisher(VehicleAttitudeSetpoint, '/fmu/in/vehicle_attitude_setpoint_v1', qos_profile)
         self.thrust_debug_pub = self.create_publisher(Float32, '/debug/thrust_z', 10)
-
-    
-        self.torque_pub   = self.create_publisher(VehicleTorqueSetpoint, '/fmu/in/vehicle_torque_setpoint', qos_profile)
-        self.thrust_pub   = self.create_publisher(VehicleThrustSetpoint, '/fmu/in/vehicle_thrust_setpoint', qos_profile)
+        self.torque_pub = self.create_publisher(VehicleTorqueSetpoint, '/fmu/in/vehicle_torque_setpoint', qos_profile)
+        self.thrust_pub = self.create_publisher(VehicleThrustSetpoint, '/fmu/in/vehicle_thrust_setpoint', qos_profile)
 
 
         self.prev_time = time.time()
@@ -77,8 +106,8 @@ class PIDcontrol(Node):
 
         self.reftraj = [
             [0.0,0.0,-5.0],   # decollo a 5m
-            [50.0,0.0,-5.0],   # avanti 5m
-            [50.0,50.0,-5.0],   # diagonale
+            [5.0,0.0,-5.0],   # avanti 5m
+            [5.0,5.0,-5.0],   # diagonale
             [0.0,0.0,-5.0],
             [0.0,0.0,0.0]    # ritorno
         ]
@@ -93,19 +122,24 @@ class PIDcontrol(Node):
         self.create_timer(0.02,  lambda: self.publish_setpoint())        # 10 Hz
         self.arm_timer = self.create_timer(2.0, self.arm)                     # arm after 2 s
         self.offboard_tiemr = self.create_timer(3.0, self.set_offboard_mode)       # switch to offboard after 3 s
-        
 
         self.current_position_recived = self.create_subscription(VehicleLocalPosition, '/fmu/out/vehicle_local_position_v1',self.callback_pos,qos_profile)
-        self.create_subscription(VehicleAttitude, '/fmu/out/vehicle_attitude', self.cb_att, qos_profile)
-        self.create_subscription(VehicleAngularVelocity, '/fmu/out/vehicle_angular_velocity', self.cb_gyro, qos_profile)
+        self.odom_sub = self.create_subscription(VehicleOdometry,'/fmu/out/vehicle_odometry',self.cb_odom,qos_profile)
 
-    def cb_att(self, msg: VehicleAttitude):
-        self.q_now = [msg.q[0], msg.q[1], msg.q[2], msg.q[3]]
 
-    def cb_gyro(self, msg: VehicleAngularVelocity):
-        # PX4 provides body rates in rad/s, FRD
-        self.omega_b = [msg.xyz[0], msg.xyz[1], msg.xyz[2]]
+    def cb_odom(self, msg: VehicleOdometry):
+        # PX4 ROS 2: msg.q is [w,x,y,z] (world←body)
+        self.q = np.array(msg.q, dtype=float)
 
+        # Body rates [p,q,r] in rad/s, body FRD
+        # msg.angular_velocity is a float[3]
+        self.omega = np.array([msg.angular_velocity[0],
+                            msg.angular_velocity[1],
+                            msg.angular_velocity[2]], dtype=float)
+        
+
+
+    
 
     def callback_pos(self,msg:VehicleLocalPosition):
         self.vxa = msg.vx
@@ -163,6 +197,30 @@ class PIDcontrol(Node):
         print(f"la tua acc in y è {self.ayPID}")
         print(f"la tua acc in z è {self.azPD}")
 
+    def controller_PID_attitude(self,rolld,pitchd,yawd):
+        
+        [roll,pitch,yaw] = quat_to_euler_zyx(self.q)
+        
+        e_roll  = wrap_pi(rolld  - roll)
+        e_pitch = wrap_pi(pitchd - pitch)
+        e_yaw   = wrap_pi(yawd   - yaw)
+
+        e = np.array([e_roll, e_pitch, e_yaw], dtype=float)
+
+        # 3) optional integral (with simple anti-windup)
+        self.I_eul += e * self.dt
+        self.I_eul = np.clip(self.I_eul, -self.I_EUL_MAX, self.I_EUL_MAX)
+
+        # 4) PD(+I) to body torques (normalized). D on body rates is fine.
+        tau = (self.Kp_eul * e) \
+            - (self.Kd_body * self.omega) \
+            + (self.Ki_eul * self.I_eul)
+
+        # 5) saturate to PX4 normalized limits
+        tau = np.clip(tau, -self.TORQUE_MAX, self.TORQUE_MAX)
+        return tau
+
+
 
     def accel_yaw_to_rpy(self, ax, ay, az, yaw_d):
         """
@@ -207,9 +265,9 @@ class PIDcontrol(Node):
         msg.position = False   # we want to control velocity
         msg.velocity = False
         msg.acceleration = False
-        msg.attitude = True
+        msg.attitude = False
+        msg.thrust_and_torque = True
         msg.body_rate = False
-        msg.thrust_and_torque = False
         self.offboard_pub.publish(msg)
 
     def publish_setpoint(self):
@@ -217,6 +275,11 @@ class PIDcontrol(Node):
         self.controller_PID_position()
        
         ap= VehicleAttitudeSetpoint()
+        tr = VehicleTorqueSetpoint()
+        th = VehicleThrustSetpoint()
+
+        
+        th.xyz
 
 
 
@@ -263,18 +326,25 @@ class PIDcontrol(Node):
         qd = self.rpy_to_quat(roll_d, pitch_d, self.yaw_d)
 
         
+        tau = self.controller_PID_attitude(roll_d, pitch_d, self.yaw_d)
         ap.timestamp = int(self.get_clock().now().nanoseconds//1000)
         ap.q_d = [qd[0], qd[1], qd[2], qd[3]] # [1.0,0.0,0.0,0.0]# 
-
+        
         # thrust in FRD body frame: z is forward-right-down, so upward thrust is negative z
-        ap.thrust_body[0] = 0.0
-        ap.thrust_body[1] = 0.0
+      #  ap.thrust_body[0] = 0.0
+       # ap.thrust_body[1] = 0.0
         #takeoff_thrust = 0.8
-        ap.thrust_body[2] = -u
-        #ap.thrust_body[2] = -clamp(HOVER_THRUST*thrust_norm, MIN_THRUST, MAX_THRUST)
+        #ap.thrust_body[2] = -u
+        #ap.thrust_body[2] = -clamp(thrust_norm, MIN_THRUST, MAX_THRUST)
+        th.xyz[0] = 0.0
+        th.xyz[1] = 0.0
+        th.xyz[2] = -u
+        tr.xyz[0] = tau[0]
+        tr.xyz[1] = tau[1]
+        tr.xyz[2] = tau[2]
         ap.yaw_sp_move_rate = 0.0
         self.thrust_debug_pub.publish(Float32(data=float(ap.thrust_body[2])))
-        print(f"Thurst che alza = {-u}, l'altr = {ap.thrust_body[2]}")
+
         
 
         self.att_sp_pub.publish(ap)
