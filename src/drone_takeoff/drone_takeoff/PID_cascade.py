@@ -79,12 +79,13 @@ class PIDcontrol(Node):
         self.omega = np.array([0.0, 0.0, 0.0], dtype=float)     # [p, q, r] rad/s in FRD
         self.I_att = np.array([0.0, 0.0, 0.0], dtype=float)     # integral on attitude error (optional)
 
-        self.Kp_eul = np.array([0.2, 0.2, 0.2])     # on [roll, pitch, yaw] errors
-        self.Kd_body = np.array([0.3, 0.3, 0.3]) # damping on [p,q,r]
-        self.Ki_eul = np.array([0.0, 0.0, 0.0])     # optional; start at 0
+        self.Kp_eul   = np.array([0.75, 0.75, 0.65])   # disable yaw at first
+        self.Kd_body  = np.array([0.10, 0.10, 0.02]) # rate damping
+        self.Ki_eul   = np.array([0.12, 0.12, 0.12])   # keep off for now
+        self.TORQUE_MAX = np.array([0.15, 0.15, 0.15])  # NO yaw torque initially
         self.I_eul = np.array([0.0, 0.0, 0.0])
         self.I_EUL_MAX = 0.3
-        self.TORQUE_MAX = np.array([1.0, 1.0, 1.0]) # normalized limits
+        #self.TORQUE_MAX = np.array([1.0, 1.0, 1.0]) # normalized limits
 
 
         
@@ -109,10 +110,10 @@ class PIDcontrol(Node):
 
         self.reftraj = [
             [0.0,0.0,-5.0],   # decollo a 5m
-            [5.0,0.0,-5.0],   # avanti 5m
-            [5.0,5.0,-5.0],   # diagonale
+            [50.0,0.0,-5.0],   # avanti 5m
+            [0.0,0.0,-5.0],   # diagonale
             [0.0,0.0,-5.0],
-            [0.0,0.0,0.0]    # ritorno
+            [0.0,0.0,-5.0]    # ritorno
         ]
 
        
@@ -216,7 +217,7 @@ class PIDcontrol(Node):
 
         # 4) PD(+I) to body torques (normalized). D on body rates is fine.
         tau = (self.Kp_eul * e) \
-            - (self.Kd_body * self.omega) \
+            - (self.Kd_body * self.omega)\
             + (self.Ki_eul * self.I_eul)
 
         # 5) saturate to PX4 normalized limits
@@ -318,7 +319,7 @@ class PIDcontrol(Node):
 
         tr = VehicleTorqueSetpoint()
         tr.timestamp = now_us
-        tr.xyz = [float(tau[0]), -float(tau[1]), float(tau[2])]
+        tr.xyz = [float(tau[0]), float(tau[1]), float(tau[2])]
         if hasattr(tr, 'timestamp_sample'):
             tr.timestamp_sample = now_us
         self.torque_pub.publish(tr)
