@@ -79,8 +79,8 @@ class PIDcontrol(Node):
         self.omega = np.array([0.0, 0.0, 0.0], dtype=float)     # [p, q, r] rad/s in FRD
         self.I_att = np.array([0.0, 0.0, 0.0], dtype=float)     # integral on attitude error (optional)
 
-        self.Kp_eul = np.array([3.0, 3.0, 1.0])     # on [roll, pitch, yaw] errors
-        self.Kd_body = np.array([0.15, 0.15, 0.10]) # damping on [p,q,r]
+        self.Kp_eul = np.array([0.2, 0.2, 0.2])     # on [roll, pitch, yaw] errors
+        self.Kd_body = np.array([0.3, 0.3, 0.3]) # damping on [p,q,r]
         self.Ki_eul = np.array([0.0, 0.0, 0.0])     # optional; start at 0
         self.I_eul = np.array([0.0, 0.0, 0.0])
         self.I_EUL_MAX = 0.3
@@ -94,6 +94,9 @@ class PIDcontrol(Node):
         self.setpoint_pub = self.create_publisher(TrajectorySetpoint, '/fmu/in/trajectory_setpoint', qos_profile)
         self.att_sp_pub = self.create_publisher(VehicleAttitudeSetpoint, '/fmu/in/vehicle_attitude_setpoint_v1', qos_profile)
         self.thrust_debug_pub = self.create_publisher(Float32, '/debug/thrust_z', 10)
+        self.torquez_debug_pub = self.create_publisher(Float32, '/debug/torquez', 10)
+        self.torquey_debug_pub = self.create_publisher(Float32, '/debug/torquey', 10)
+        self.torquex_debug_pub = self.create_publisher(Float32, '/debug/torquex', 10)
         self.torque_pub = self.create_publisher(VehicleTorqueSetpoint, '/fmu/in/vehicle_torque_setpoint', qos_profile)
         self.thrust_pub = self.create_publisher(VehicleThrustSetpoint, '/fmu/in/vehicle_thrust_setpoint', qos_profile)
 
@@ -271,43 +274,31 @@ class PIDcontrol(Node):
         self.offboard_pub.publish(msg)
 
     def publish_setpoint(self):
-
+        # Outer loops (unchanged)
         self.controller_PID_position()
-       
-        ap= VehicleAttitudeSetpoint()
-        tr = VehicleTorqueSetpoint()
-        th = VehicleThrustSetpoint()
 
-        
-        th.xyz
-
-
-
-        az_cmd = self.azPD + self.Kiz * self.I[2]   # accel desiderata (+giù)
-
-        # mappa con hover: az=0 -> hover
+        # ---- Vertical thrust mapping (unchanged idea) ----
+        az_cmd = self.azPD + self.Kiz * self.I[2]
         u_unsat = HOVER_THRUST * (1.0 - az_cmd / G)
         u = clamp(u_unsat, MIN_THRUST, MAX_THRUST)
 
-        # anti-windup (blocca I se saturato nella direzione che peggiora)
-        sat_hi = (u >= MAX_THRUST - 1e-6) and (az_cmd < 0)  # chiedi ancora più su
-        sat_lo = (u <= MIN_THRUST + 1e-6) and (az_cmd > 0)  # chiedi ancora più giù
+        # anti-windup on Z (unchanged)
+        sat_hi = (u >= MAX_THRUST - 1e-6) and (az_cmd < 0)
+        sat_lo = (u <= MIN_THRUST + 1e-6) and (az_cmd > 0)
         near_sp = (abs(self.error_z) < 0.05 and abs(self.vza) < 0.1)
-
         if not (sat_hi or sat_lo) and not near_sp:
             self.I[2] += self.error_z * self.dt
             self.I[2] = clamp(self.I[2], -I_MAX, I_MAX)
         else:
-            # leakage: scarica lentamente l'integratore per evitare derive lente
             self.I[2] *= (1.0 - self.dt/5.0)
 
+        # optional XY integrators (unchanged)
         near_xy = (abs(self.error_x) < 0.3 and abs(self.vxa) < 0.5)
         if self.Kix > 0.0:
             if abs(self.axPIDclam - self.axPID) < 1e-6 and near_xy:
                 self.I[0] = clamp(self.I[0] + self.error_x*self.dt, -I_XY_MAX, I_XY_MAX)
             else:
                 self.I[0] *= (1.0 - self.dt/I_LEAK_TAU)
-
         if self.Kiy > 0.0:
             near_yy = (abs(self.error_y) < 0.3 and abs(self.vya) < 0.5)
             if abs(self.ayPIDclam - self.ayPID) < 1e-6 and near_yy:
@@ -315,39 +306,35 @@ class PIDcontrol(Node):
             else:
                 self.I[1] *= (1.0 - self.dt/I_LEAK_TAU)
 
-
-        #ax, ay, az = self.axPID, self.ayPID, self.azPID
+        # ---- Accel + yaw → desired roll,pitch (for the inner loop) ----
         ax, ay, az = self.axPIDclam, self.ayPIDclam, az_cmd
+        roll_d, pitch_d, _ = self.accel_yaw_to_rpy(ax, ay, az, self.yaw_d)
 
-        # 2) accel + yaw -> roll, pitch, thrust
-        roll_d, pitch_d, thrust_norm = self.accel_yaw_to_rpy(ax, ay, az, self.yaw_d)
+        # ---- Inner loop: Euler-error PD(+I) with body-rate damping ----
+        tau = self.controller_PID_attitude(roll_d, pitch_d, self.yaw_d)  # normalized torques
 
-        # 3) rpy -> quaternion (ZYX order)
-        qd = self.rpy_to_quat(roll_d, pitch_d, self.yaw_d)
+        # ---- Publish torque & thrust setpoints (MANDATORY every cycle) ----
+        now_us = int(self.get_clock().now().nanoseconds // 1000)
 
-        
-        tau = self.controller_PID_attitude(roll_d, pitch_d, self.yaw_d)
-        ap.timestamp = int(self.get_clock().now().nanoseconds//1000)
-        ap.q_d = [qd[0], qd[1], qd[2], qd[3]] # [1.0,0.0,0.0,0.0]# 
-        
-        # thrust in FRD body frame: z is forward-right-down, so upward thrust is negative z
-      #  ap.thrust_body[0] = 0.0
-       # ap.thrust_body[1] = 0.0
-        #takeoff_thrust = 0.8
-        #ap.thrust_body[2] = -u
-        #ap.thrust_body[2] = -clamp(thrust_norm, MIN_THRUST, MAX_THRUST)
-        th.xyz[0] = 0.0
-        th.xyz[1] = 0.0
-        th.xyz[2] = -u
-        tr.xyz[0] = tau[0]
-        tr.xyz[1] = tau[1]
-        tr.xyz[2] = tau[2]
-        ap.yaw_sp_move_rate = 0.0
-        self.thrust_debug_pub.publish(Float32(data=float(ap.thrust_body[2])))
+        tr = VehicleTorqueSetpoint()
+        tr.timestamp = now_us
+        tr.xyz = [float(tau[0]), -float(tau[1]), float(tau[2])]
+        if hasattr(tr, 'timestamp_sample'):
+            tr.timestamp_sample = now_us
+        self.torque_pub.publish(tr)
 
-        
+        th = VehicleThrustSetpoint()
+        th.timestamp = now_us
+        th.xyz = [0.0, 0.0, float(-u)]   # FRD: negative z = upward thrust
+        if hasattr(th, 'timestamp_sample'):
+            th.timestamp_sample = now_us
+        self.thrust_pub.publish(th)
 
-        self.att_sp_pub.publish(ap)
+        # Debug actual thrust sent
+        self.thrust_debug_pub.publish(Float32(data=float(th.xyz[2])))
+        self.torquez_debug_pub.publish(Float32(data=float(tr.xyz[2])))
+        self.torquey_debug_pub.publish(Float32(data=float(tr.xyz[1])))
+        self.torquex_debug_pub.publish(Float32(data=float(tr.xyz[0])))
 
     def arm(self):
         msg = VehicleCommand()
