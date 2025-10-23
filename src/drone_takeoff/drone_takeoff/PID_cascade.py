@@ -81,7 +81,7 @@ class PIDcontrol(Node):
 
         self.Kp_eul   = np.array([0.75, 0.75, 0.65])   # disable yaw at first
         self.Kd_body  = np.array([0.10, 0.10, 0.02]) # rate damping
-        self.Ki_eul   = np.array([0.12, 0.12, 0.12])   # keep off for now
+        self.Ki_eul   = np.array([0.1, 0.1, 0.1])   # keep off for now
         self.TORQUE_MAX = np.array([0.15, 0.15, 0.15])  # NO yaw torque initially
         self.I_eul = np.array([0.0, 0.0, 0.0])
         self.I_EUL_MAX = 0.3
@@ -111,9 +111,9 @@ class PIDcontrol(Node):
         self.reftraj = [
             [0.0,0.0,-5.0],   # decollo a 5m
             [50.0,0.0,-5.0],   # avanti 5m
-            [0.0,0.0,-5.0],   # diagonale
+            [50.0,50.0,-5.0],   # diagonale
             [0.0,0.0,-5.0],
-            [0.0,0.0,-5.0]    # ritorno
+            [0.0,0.0,-0.0]    # ritorno
         ]
 
        
@@ -149,6 +149,7 @@ class PIDcontrol(Node):
         self.vxa = msg.vx
         self.vya = msg.vy
         self.vza = msg.vz
+        #self.yaw_d = msg.heading
         self.error_x = self.refpoint[0] - msg.x 
         self.error_y = self.refpoint[1] - msg.y
         self.error_z = self.refpoint[2] - msg.z
