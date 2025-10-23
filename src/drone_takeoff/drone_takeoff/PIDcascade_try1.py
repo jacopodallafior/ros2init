@@ -237,6 +237,7 @@ class PIDcontrol(Node):
         msg.acceleration = False
         msg.attitude = True
         msg.body_rate = False
+        msg.thrust_and_torque = True
 
         self.offboard_pub.publish(msg)
 
