@@ -16,7 +16,7 @@ MIN_THRUST = 0.05                 # normalized thrust limits for PX4
 MAX_THRUST = 0.9
 HOVER_THRUST = 0.75   # da tarare; 0.5–0.6 in SITL è tipico
 I_MAX = 3.0   
-A_XY_MAX   = 4.5   # m/s^2 limit for horizontal accel command
+
 I_XY_MAX   = 2.0   # cap on XY integrators
 I_LEAK_TAU = 5.0   # s, for gentle integral leakage
 
