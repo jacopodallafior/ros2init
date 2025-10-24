@@ -60,12 +60,12 @@ class PIDcontrol(Node):
         self.Kiz = 0.02
         self.Kdz = 0.7#0.5
         
-        self.Kpx = 0.2
-        self.Kdx = 0.6
-        self.Kix = 0.0
-        self.Kpy = 0.1
-        self.Kdy = 0.6
-        self.Kiy = 0.0
+        self.Kpx = 0.3
+        self.Kdx = 0.75
+        self.Kix = 0.01
+        self.Kpy = 0.3
+        self.Kdy = 0.75
+        self.Kiy = 0.01
 
         self.Vmax = 1.0
         self.error_x = 0.0
