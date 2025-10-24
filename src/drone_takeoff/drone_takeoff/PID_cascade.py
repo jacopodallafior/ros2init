@@ -79,9 +79,9 @@ class PIDcontrol(Node):
         self.omega = np.array([0.0, 0.0, 0.0], dtype=float)     # [p, q, r] rad/s in FRD
         self.I_att = np.array([0.0, 0.0, 0.0], dtype=float)     # integral on attitude error (optional)
 
-        self.Kp_eul   = np.array([0.75, 0.75, 0.65])   # disable yaw at first
-        self.Kd_body  = np.array([0.10, 0.10, 0.02]) # rate damping
-        self.Ki_eul   = np.array([0.1, 0.1, 0.1])   # keep off for now
+        self.Kp_eul   = np.array([0.75, 0.75, 0.15])   # disable yaw at first
+        self.Kd_body  = np.array([0.10, 0.10, 0.06]) # rate damping
+        self.Ki_eul   = np.array([0.12, 0.12, 0.00])   # keep off for now
         self.TORQUE_MAX = np.array([0.15, 0.15, 0.15])  # NO yaw torque initially
         self.I_eul = np.array([0.0, 0.0, 0.0])
         self.I_EUL_MAX = 0.3
