@@ -11,12 +11,12 @@ import time
 import math
 
 G = 9.81                          # m/s^2
-TILT_LIMIT_RAD = math.radians(35) # safety tilt limit
+TILT_LIMIT_RAD = math.radians(45) # safety tilt limit
 MIN_THRUST = 0.05                 # normalized thrust limits for PX4
 MAX_THRUST = 0.9
 HOVER_THRUST = 0.75   # da tarare; 0.5–0.6 in SITL è tipico
 I_MAX = 3.0   
-A_XY_MAX   = 4.0   # m/s^2 limit for horizontal accel command
+A_XY_MAX   = 4.5   # m/s^2 limit for horizontal accel command
 I_XY_MAX   = 2.0   # cap on XY integrators
 I_LEAK_TAU = 5.0   # s, for gentle integral leakage
 
@@ -40,12 +40,12 @@ class PIDcontrol(Node):
         self.Kiz = 0.02
         self.Kdz = 0.7#0.5
         
-        self.Kpx = 0.2
-        self.Kdx = 0.6
-        self.Kix = 0.0
-        self.Kpy = 0.1
-        self.Kdy = 0.6
-        self.Kiy = 0.0
+        self.Kpx = 0.3
+        self.Kdx = 0.75
+        self.Kix = 0.01
+        self.Kpy = 0.3
+        self.Kdy = 0.75
+        self.Kiy = 0.01
 
         self.Vmax = 1.0
         self.error_x = 0.0
@@ -146,7 +146,7 @@ class PIDcontrol(Node):
 
 
 
-        print(f"la tua acc in x è {self.axPID}")
+        print(f"la tua acc in x è {self.axPID}-PID SINGOLA CASCADE")
         print(f"la tua acc in y è {self.ayPID}")
         print(f"la tua acc in z è {self.azPD}")
 
