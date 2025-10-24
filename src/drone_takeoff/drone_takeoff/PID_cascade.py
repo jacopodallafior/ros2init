@@ -11,12 +11,12 @@ import time
 import math
 
 G = 9.81                          # m/s^2
-TILT_LIMIT_RAD = math.radians(35) # safety tilt limit
+TILT_LIMIT_RAD = math.radians(45) # safety tilt limit
 MIN_THRUST = 0.05                 # normalized thrust limits for PX4
 MAX_THRUST = 0.9
 HOVER_THRUST = 0.75   # da tarare; 0.5–0.6 in SITL è tipico
 I_MAX = 3.0   
-A_XY_MAX   = 4.0   # m/s^2 limit for horizontal accel command
+A_XY_MAX   = 6.0   # m/s^2 limit for horizontal accel command
 I_XY_MAX   = 2.0   # cap on XY integrators
 I_LEAK_TAU = 5.0   # s, for gentle integral leakage
 
