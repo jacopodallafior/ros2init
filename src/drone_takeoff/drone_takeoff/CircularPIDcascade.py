@@ -13,10 +13,10 @@ import math
 G = 9.81                          # m/s^2
 TILT_LIMIT_RAD = math.radians(45) # safety tilt limit
 MIN_THRUST = 0.05                 # normalized thrust limits for PX4
-MAX_THRUST = 1.3
+MAX_THRUST = 0.9
 HOVER_THRUST = 0.75   # da tarare; 0.5–0.6 in SITL è tipico
 I_MAX = 3.0   
-
+A_XY_MAX   = 6.0   # m/s^2 limit for horizontal accel command
 I_XY_MAX   = 2.0   # cap on XY integrators
 I_LEAK_TAU = 5.0   # s, for gentle integral leakage
 
@@ -48,7 +48,7 @@ class PIDcontrol(Node):
 
 
     def __init__(self):
-        super().__init__('PID_controller_cascade')
+        super().__init__('CircularPIDcascade')
         qos_profile = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,  # match PX4 publisher
             durability=DurabilityPolicy.VOLATILE,
@@ -67,9 +67,6 @@ class PIDcontrol(Node):
         self.Kdy = 0.75
         self.Kiy = 0.01
 
-
-        self.yaw_gate_rad = math.radians(10.0)
-        self.yaw_now = 0.0
         self.Vmax = 1.0
         self.error_x = 0.0
         self.error_y = 0.0
@@ -83,7 +80,7 @@ class PIDcontrol(Node):
         self.I_att = np.array([0.0, 0.0, 0.0], dtype=float)     # integral on attitude error (optional)
 
         self.Kp_eul   = np.array([0.75, 0.75, 0.35])   # disable yaw at first
-        self.Kd_body  = np.array([0.10, 0.10, 0.04]) # rate damping
+        self.Kd_body  = np.array([0.10, 0.10, 0.06]) # rate damping
         self.Ki_eul   = np.array([0.12, 0.12, 0.00])   # keep off for now
         self.TORQUE_MAX = np.array([0.15, 0.15, 0.15])  # NO yaw torque initially
         self.I_eul = np.array([0.0, 0.0, 0.0])
@@ -107,21 +104,31 @@ class PIDcontrol(Node):
 
         self.prev_time = time.time()
         self.I = [0.0, 0.0, 0.0]
+        self.yaw_gate_rad = math.radians(10.0)
+        self.t_last = time.time()
 
     
 
 
-        self.reftraj = [
-            [0.0,0.0,-5.0],   # decollo a 5m
-            [50.0,0.0,-5.0],   # avanti 5m
-            [50.0,50.0,-5.0],   # diagonale
-            [0.0,0.0,-5.0],
-            [0.0,0.0,-0.0]    # ritorno
-        ]
+                # ---- Trajectory generator (figure-8) ----
+        self.mode = 'fig8'            # 'waypoints' or 'fig8'
+        self.center = np.array([0.0, 0.0, -5.0], dtype=float)  # [x0, y0, z0] (z<0 in NED)
+        self.Ax = 40.0                # half-width in X (meters)
+        self.Ay = 40.0                # half-height in Y (meters)
 
+        self.period = 30.0            # seconds (ω = 2π/period). Increase if accel is too high.
+        self.w_traj = 2.0*math.pi / self.period
+        self.phase = 0.0              # phase for Y in the Lissajous form
+        self.follow_tangent_yaw = True   # True → yaw points along motion, False → yaw=0
+        self.lock_center_on_first_pose = True  # center on first pose automatically
+        self.have_center = False
+
+        self.t0 = time.time()
+
+        self.refpoint = [float(self.center[0]), float(self.center[1]), float(self.center[2])]
        
         self.refcount = 0
-        self.refpoint = self.reftraj[self.refcount]
+       
         
     
         # Timers
@@ -132,6 +139,57 @@ class PIDcontrol(Node):
 
         self.current_position_recived = self.create_subscription(VehicleLocalPosition, '/fmu/out/vehicle_local_position_v1',self.callback_pos,qos_profile)
         self.odom_sub = self.create_subscription(VehicleOdometry,'/fmu/out/vehicle_odometry',self.cb_odom,qos_profile)
+
+
+    def update_reference(self):
+        if self.mode != 'fig8':
+            return
+
+        now = time.time()
+        dt = now - self.t_last
+        self.t_last = now
+
+        # Optionally lock the center when first pose arrives
+        if self.lock_center_on_first_pose and not self.have_center and hasattr(self, 'last_pos'):
+            self.center[0] = self.last_pos[0]
+            self.center[1] = self.last_pos[1]
+            self.have_center = True
+
+        # ---- candidate time along the trajectory ----
+        t_cand = now - self.t0
+
+        # ---- Candidate position at t_cand ----
+        x_cand = self.center[0] + self.Ax * math.sin(self.w_traj * t_cand)
+        y_cand = self.center[1] + self.Ay * math.sin(2.0 * self.w_traj * t_cand + self.phase)
+        z_cand = self.center[2]
+
+        # ---- Candidate yaw at t_cand ----
+        if self.follow_tangent_yaw:
+            vx = self.Ax * self.w_traj * math.cos(self.w_traj * t_cand)
+            vy = 2.0 * self.Ay * self.w_traj * math.cos(2.0 * self.w_traj * t_cand + self.phase)
+            yaw_cand = math.atan2(vy, vx)
+        else:
+            yaw_cand = 0.0
+
+        # ---- Check yaw gate vs actual yaw ----
+        _, _, yaw_act = quat_to_euler_zyx(self.q)
+        yaw_err = abs(wrap_pi(yaw_cand - yaw_act))
+
+        if yaw_err >= self.yaw_gate_rad:
+            # Freeze trajectory progress: move t0 forward by dt so (now - t0) doesn't change
+            self.t0 += dt
+            if not hasattr(self, 'refpoint'):
+                # seed once so downstream code has a reference
+                self.refpoint = [x_cand, y_cand, z_cand]
+                self.yaw_d = yaw_cand
+            return
+            # keep previous reference; do not update refpoint/yaw_d
+            
+
+        # ---- Accept candidate as the new reference ----
+        self.refpoint = [x_cand, y_cand, z_cand]
+        self.yaw_d = yaw_cand
+
 
 
     def cb_odom(self, msg: VehicleOdometry):
@@ -148,46 +206,51 @@ class PIDcontrol(Node):
 
     
 
-    def callback_pos(self,msg:VehicleLocalPosition):
+    def callback_pos(self, msg: VehicleLocalPosition):
+        # Cache current velocity & pose
         self.vxa = msg.vx
         self.vya = msg.vy
         self.vza = msg.vz
-        #self.yaw_d = msg.heading
+        self.last_pos = (msg.x, msg.y, msg.z)
+
+        # Keep the reference fresh for continuous trajectories
+        if self.mode == 'fig8':
+            self.update_reference()
+
+        # Position errors w.r.t. current reference
         self.error_x = self.refpoint[0] - msg.x 
         self.error_y = self.refpoint[1] - msg.y
         self.error_z = self.refpoint[2] - msg.z
-        
 
         print(f"l'errore in x è {self.error_x}")
         print(f"l'errore in y è {self.error_y}")
         print(f"l'errore in z è {self.error_z}")
-        # print(f"la distanza {distance}")
 
+        # Only run the "advance to next waypoint" logic in waypoint mode
+        if self.mode == 'waypoints':
             # current yaw
-        _, _, self.yaw_now = quat_to_euler_zyx(self.q)
+            _, _, yaw = quat_to_euler_zyx(self.q)
             # desired yaw for waypoint mode (use whatever you want; here we use self.yaw_d)
-        yaw_err = abs(wrap_pi(self.yaw_d - self.yaw_now))
-        yaw_ok  = yaw_err < self.yaw_gate_rad
+            yaw_err = abs(wrap_pi(self.yaw_d - yaw))
+            yaw_ok  = yaw_err < self.yaw_gate_rad
 
-        pos_ok = (abs(self.error_x) < 0.5 and
-                    abs(self.error_y) < 0.5 and
-                    abs(self.error_z) < 0.5)
+            pos_ok = (abs(self.error_x) < 0.5 and
+                      abs(self.error_y) < 0.5 and
+                      abs(self.error_z) < 0.5)
 
-        if pos_ok and yaw_ok:
-            if not hasattr(self, "inside_since"):
-                self.inside_since = time.time()
-            elif time.time() - self.inside_since > 1.0:
-                self.refcount += 1
-            if self.refcount < len(self.reftraj):
-                self.refpoint = self.reftraj[self.refcount]
-                print("POSIZIONE RAGGIUNTA (yaw ok)")
-        else:
-            if hasattr(self, "inside_since"):
-                del self.inside_since
-        if self.refcount == 2.0:
-            self.yaw_d = math.radians(90.0)
-        elif self.refcount == 3.0:
-            self.yaw_d = math.radians(210.0)
+            if pos_ok and yaw_ok:
+                if not hasattr(self, "inside_since"):
+                    self.inside_since = time.time()
+                elif time.time() - self.inside_since > 1.0:
+                    self.refcount += 1
+                if self.refcount < len(self.reftraj):
+                    self.refpoint = self.reftraj[self.refcount]
+                    print("POSIZIONE RAGGIUNTA (yaw ok)")
+            else:
+                if hasattr(self, "inside_since"):
+                    del self.inside_since
+
+            
             
 
 
@@ -215,7 +278,7 @@ class PIDcontrol(Node):
 
 
 
-        print(f"la tua acc in x è {self.axPID}-PID SINGOLA CASCADE")
+        print(f"la tua acc in x è {self.axPID}")
         print(f"la tua acc in y è {self.ayPID}")
         print(f"la tua acc in z è {self.azPD}")
 
@@ -253,12 +316,12 @@ class PIDcontrol(Node):
         roll_d, pitch_d, thrust_norm
         """
         # include gravity, get total specific force in NED
-        fx, fy, fz = -ax, -ay, G - az#-ax, ay, - az + G
+        fx, fy, fz = -ax, -ay, G - az#ax, ay, az + G
         
 
         # Closed-form (ZYX: yaw-pitch-roll)
         pitch_d = math.atan2( fx*math.cos(yaw_d) + fy*math.sin(yaw_d),  fz )
-        roll_d  = math.atan2( -fy*math.cos(yaw_d) + fx*math.sin(yaw_d),  fz )  #- davanti al cos + al sin
+        roll_d  = math.atan2( -fy*math.cos(yaw_d) + fx*math.sin(yaw_d),  fz )
 
         # Tilt safety
         roll_d  = clamp(roll_d,  -TILT_LIMIT_RAD, TILT_LIMIT_RAD)
@@ -293,6 +356,8 @@ class PIDcontrol(Node):
         self.offboard_pub.publish(msg)
 
     def publish_setpoint(self):
+        if self.mode == 'fig8':
+            self.update_reference()
         # Outer loops (unchanged)
         self.controller_PID_position()
 
@@ -327,7 +392,7 @@ class PIDcontrol(Node):
 
         # ---- Accel + yaw → desired roll,pitch (for the inner loop) ----
         ax, ay, az = self.axPIDclam, self.ayPIDclam, az_cmd
-        roll_d, pitch_d, _ = self.accel_yaw_to_rpy(ax, ay, az, self.yaw_now)  # not use yaw_now
+        roll_d, pitch_d, _ = self.accel_yaw_to_rpy(ax, ay, az, self.yaw_d)
 
         # ---- Inner loop: Euler-error PD(+I) with body-rate damping ----
         tau = self.controller_PID_attitude(roll_d, pitch_d, self.yaw_d)  # normalized torques
