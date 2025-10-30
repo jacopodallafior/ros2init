@@ -3,7 +3,7 @@
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
-from px4_msgs.msg import OffboardControlMode, TrajectorySetpoint, VehicleCommand, VehicleLocalPosition,VehicleAttitude,VehicleTorqueSetpoint,VehicleOdometry, VehicleThrustSetpoint, VehicleStatus,VehicleAttitudeSetpoint
+from px4_msgs.msg import OffboardControlMode, TrajectorySetpoint, VehicleCommand, ActuatorMotors,VehicleLocalPosition,VehicleAttitude,VehicleTorqueSetpoint,VehicleOdometry, VehicleThrustSetpoint, VehicleStatus,VehicleAttitudeSetpoint
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from std_msgs.msg import Float32
 import numpy as np
@@ -13,10 +13,10 @@ import math
 G = 9.81                          # m/s^2
 TILT_LIMIT_RAD = math.radians(45) # safety tilt limit
 MIN_THRUST = 0.05                 # normalized thrust limits for PX4
-MAX_THRUST = 1.3
-HOVER_THRUST = 0.75   # da tarare; 0.5–0.6 in SITL è tipico
+MAX_THRUST = 1.0
+HOVER_THRUST = 0.725   # da tarare; 0.5–0.6 in SITL è tipico
 I_MAX = 3.0   
-
+A_XY_MAX   = 6.0   # m/s^2 limit for horizontal accel command
 I_XY_MAX   = 2.0   # cap on XY integrators
 I_LEAK_TAU = 5.0   # s, for gentle integral leakage
 
@@ -48,14 +48,14 @@ class PIDcontrol(Node):
 
 
     def __init__(self):
-        super().__init__('PID_controller_cascade')
+        super().__init__('FullControl')
         qos_profile = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,  # match PX4 publisher
             durability=DurabilityPolicy.VOLATILE,
             history=HistoryPolicy.KEEP_LAST,
             depth=1
         )
-
+        # Outer loop gains
         self.Kpz = 0.6#1.6
         self.Kiz = 0.02
         self.Kdz = 0.7#0.5
@@ -67,13 +67,14 @@ class PIDcontrol(Node):
         self.Kdy = 0.75
         self.Kiy = 0.01
 
-
+        # State variables
         self.yaw_gate_rad = math.radians(10.0)
         self.yaw_now = 0.0
         self.Vmax = 1.0
         self.error_x = 0.0
         self.error_y = 0.0
         self.error_z = 0.0
+        #self.yaw_d = 0.0
         self.yaw_d = math.radians(90.0)
         self.vxa = 0
         self.vya = 0
@@ -82,6 +83,8 @@ class PIDcontrol(Node):
         self.omega = np.array([0.0, 0.0, 0.0], dtype=float)     # [p, q, r] rad/s in FRD
         self.I_att = np.array([0.0, 0.0, 0.0], dtype=float)     # integral on attitude error (optional)
 
+
+        # Inner loop gains
         self.Kp_eul   = np.array([0.75, 0.75, 0.35])   # disable yaw at first
         self.Kd_body  = np.array([0.10, 0.10, 0.04]) # rate damping
         self.Ki_eul   = np.array([0.12, 0.12, 0.00])   # keep off for now
@@ -89,6 +92,39 @@ class PIDcontrol(Node):
         self.I_eul = np.array([0.0, 0.0, 0.0])
         self.I_EUL_MAX = 0.3
         #self.TORQUE_MAX = np.array([1.0, 1.0, 1.0]) # normalized limits
+
+        #FILTER ON D
+        self.p_lpf = self.q_lpf = self.r_lpf = 0.0
+        self.fcut_rates = 20.0 
+
+        # MMA useful variables
+
+        self.m = 0.6           # kg (put your mass)
+        self.u_hover = 0.73    # hover command (0..1)
+        self.kf       = (self.m*G)/(4*self.u_hover)  # [N] thrust per motor at command=1
+        self.km       = 0.016         # [m] yaw torque ratio (start 0.015–0.025)
+
+        self.propx = np.array([ +0.13, -0.13, +0.13, -0.13 ], float)
+        self.propy = np.array([ +0.22, -0.20, -0.22, +0.20 ], float)
+        self.s = np.array([ +1, +1, -1, -1 ], float)
+
+        self.N = 4
+
+        self.B = np.vstack([
+            -self.propy * self.kf,             # Mx
+            self.propx * self.kf,             # My
+            self.s  * self.km,   # Mz
+            -np.ones(4) * self.kf     # Fz (FRD: up-thrust is negative)
+        ]).astype(float)
+
+        l = np.sqrt((self.propx**2 + self.propy**2).mean())         # approx arm (m)
+        kappa = 0.4
+        self.Mx_max = self.My_max = (l/np.sqrt(2)) * (self.m*G) * kappa
+        self.Mz_max = 0.15 * self.Mx_max #0.3 before
+        self.T_max  = (self.m*G)/self.u_hover
+        # Slew limit helper
+        self.u_prev = np.zeros(4)
+        self.slew_per_s = 20.0  # max Δu per second (tune)
 
 
         
@@ -98,11 +134,14 @@ class PIDcontrol(Node):
         self.setpoint_pub = self.create_publisher(TrajectorySetpoint, '/fmu/in/trajectory_setpoint', qos_profile)
         self.att_sp_pub = self.create_publisher(VehicleAttitudeSetpoint, '/fmu/in/vehicle_attitude_setpoint_v1', qos_profile)
         self.thrust_debug_pub = self.create_publisher(Float32, '/debug/thrust_z', 10)
-        self.torquez_debug_pub = self.create_publisher(Float32, '/debug/torquez', 10)
-        self.torquey_debug_pub = self.create_publisher(Float32, '/debug/torquey', 10)
-        self.torquex_debug_pub = self.create_publisher(Float32, '/debug/torquex', 10)
+        self.prop1_debug_pub = self.create_publisher(Float32, '/debug/prop1', 10)
+        self.prop2_debug_pub = self.create_publisher(Float32, '/debug/prop2', 10)
+        self.prop3_debug_pub = self.create_publisher(Float32, '/debug/prop3', 10)
+        self.prop4_debug_pub = self.create_publisher(Float32, '/debug/prop4', 10)
+
         self.torque_pub = self.create_publisher(VehicleTorqueSetpoint, '/fmu/in/vehicle_torque_setpoint', qos_profile)
         self.thrust_pub = self.create_publisher(VehicleThrustSetpoint, '/fmu/in/vehicle_thrust_setpoint', qos_profile)
+        self.act_motors_pub = self.create_publisher(ActuatorMotors, '/fmu/in/actuator_motors', qos_profile)
 
 
         self.prev_time = time.time()
@@ -113,8 +152,8 @@ class PIDcontrol(Node):
 
         self.reftraj = [
             [0.0,0.0,-5.0],   # decollo a 5m
-            [0.0,0.0,-5.0],   # avanti 5m
-            [0.0,0.0,-5.0],   # diagonale
+            [0.0,10.0,-5.0],   # avanti 5m
+            [0.0,5.0,-5.0],   # diagonale
             [0.0,0.0,-5.0],
             [0.0,0.0,-5.0]    # ritorno
         ]
@@ -125,8 +164,8 @@ class PIDcontrol(Node):
         
     
         # Timers
-        self.create_timer(0.008, self.publish_offboard_mode)   # 10 Hz
-        self.create_timer(0.008,  lambda: self.publish_setpoint())        # 10 Hz
+        self.create_timer(0.0025, self.publish_offboard_mode)   # 10 Hz
+        self.create_timer(0.0025,  lambda: self.publish_setpoint())        # 10 Hz
         self.arm_timer = self.create_timer(2.0, self.arm)                     # arm after 2 s
         self.offboard_tiemr = self.create_timer(3.0, self.set_offboard_mode)       # switch to offboard after 3 s
 
@@ -156,11 +195,7 @@ class PIDcontrol(Node):
         self.error_x = self.refpoint[0] - msg.x 
         self.error_y = self.refpoint[1] - msg.y
         self.error_z = self.refpoint[2] - msg.z
-        
 
-        print(f"l'errore in x è {self.error_x}")
-        print(f"l'errore in y è {self.error_y}")
-        print(f"l'errore in z è {self.error_z}")
         # print(f"la distanza {distance}")
 
             # current yaw
@@ -184,10 +219,12 @@ class PIDcontrol(Node):
         else:
             if hasattr(self, "inside_since"):
                 del self.inside_since
+        
         if self.refcount == 2.0:
             self.yaw_d = math.radians(40.0)
         elif self.refcount == 3.0:
             self.yaw_d = math.radians(80.0)
+
             
 
 
@@ -195,6 +232,8 @@ class PIDcontrol(Node):
 
         now = time.time()
         self.dt = now - self.prev_time
+        self.dt = max(1/800.0, min(self.dt, 0.03))  # per un target 400 Hz
+
         self.prev_time = now
 
       #  self.I[0] += self.error_x * self.dt
@@ -213,12 +252,6 @@ class PIDcontrol(Node):
         self.axPIDclam = clamp(self.axPID, -A_XY_MAX, A_XY_MAX)
         self.ayPIDclam = clamp(self.ayPID, -A_XY_MAX, A_XY_MAX)
 
-
-
-        print(f"la tua acc in x è {self.axPID}-PID SINGOLA CASCADE")
-        print(f"la tua acc in y è {self.ayPID}")
-        print(f"la tua acc in z è {self.azPD}")
-
     def controller_PID_attitude(self,rolld,pitchd,yawd):
         
         [roll,pitch,yaw] = quat_to_euler_zyx(self.q)
@@ -229,16 +262,13 @@ class PIDcontrol(Node):
 
         e = np.array([e_roll, e_pitch, e_yaw], dtype=float)
 
-        # 3) optional integral (with simple anti-windup)
-        self.I_eul += e * self.dt
-        self.I_eul = np.clip(self.I_eul, -self.I_EUL_MAX, self.I_EUL_MAX)
-
-        # 4) PD(+I) to body torques (normalized). D on body rates is fine.
-        tau = (self.Kp_eul * e) \
-            - (self.Kd_body * self.omega)\
-            + (self.Ki_eul * self.I_eul)
-
-        # 5) saturate to PX4 normalized limits
+        tau_p = (self.Kp_eul * e) - (self.Kd_body * np.array([self.p_lpf,self.q_lpf,self.r_lpf]))
+        will_sat = np.any(np.abs(tau_p) > self.TORQUE_MAX - 1e-6)
+        if not will_sat:
+            self.I_eul = np.clip(self.I_eul + e*self.dt, -self.I_EUL_MAX, self.I_EUL_MAX)
+        else:
+            self.I_eul *= (1.0 - self.dt/3.0)
+        tau = tau_p + self.Ki_eul*self.I_eul
         tau = np.clip(tau, -self.TORQUE_MAX, self.TORQUE_MAX)
         return tau
 
@@ -288,8 +318,8 @@ class PIDcontrol(Node):
         msg.velocity = False
         msg.acceleration = False
         msg.attitude = False
-        msg.thrust_and_torque = True
-        msg.direct_actuator = False
+        msg.thrust_and_torque = False
+        msg.direct_actuator = True
         msg.body_rate = False
         self.offboard_pub.publish(msg)
 
@@ -311,7 +341,10 @@ class PIDcontrol(Node):
             self.I[2] = clamp(self.I[2], -I_MAX, I_MAX)
         else:
             self.I[2] *= (1.0 - self.dt/5.0)
-
+        alpha = math.exp(-2.0*math.pi*self.fcut_rates*self.dt)
+        self.p_lpf = alpha*self.p_lpf + (1-alpha)*self.omega[0]
+        self.q_lpf = alpha*self.q_lpf + (1-alpha)*self.omega[1]
+        self.r_lpf = alpha*self.r_lpf + (1-alpha)*self.omega[2]
         # optional XY integrators (unchanged)
         near_xy = (abs(self.error_x) < 0.3 and abs(self.vxa) < 0.5)
         if self.Kix > 0.0:
@@ -328,34 +361,88 @@ class PIDcontrol(Node):
 
         # ---- Accel + yaw → desired roll,pitch (for the inner loop) ----
         ax, ay, az = self.axPIDclam, self.ayPIDclam, az_cmd
-        roll_d, pitch_d, _ = self.accel_yaw_to_rpy(ax, ay, az, self.yaw_d)  # not use yaw_now
 
+        #self.yaw_d = self.yaw_now
+        roll_d, pitch_d, _ = self.accel_yaw_to_rpy(ax, ay, az, self.yaw_d)  # not use yaw_now
+        
         # ---- Inner loop: Euler-error PD(+I) with body-rate damping ----
         tau = self.controller_PID_attitude(roll_d, pitch_d, self.yaw_d)  # normalized torques
 
         # ---- Publish torque & thrust setpoints (MANDATORY every cycle) ----
         now_us = int(self.get_clock().now().nanoseconds // 1000)
 
-        tr = VehicleTorqueSetpoint()
+        
 
-        tr.timestamp = now_us
-        tr.xyz = [float(tau[0]), float(tau[1]), float(tau[2])]
-        if hasattr(tr, 'timestamp_sample'):
-            tr.timestamp_sample = now_us
-        self.torque_pub.publish(tr)
+        u_mot, sat = self.mix_to_motors(tau=np.array([tau[0], tau[1], tau[2]], float),
+            u_thrust=u,
+            dt=self.dt)
 
-        th = VehicleThrustSetpoint()
-        th.timestamp = now_us
-        th.xyz = [0.0, 0.0, float(-u)]   # FRD: negative z = upward thrust
-        if hasattr(th, 'timestamp_sample'):
-            th.timestamp_sample = now_us
-        self.thrust_pub.publish(th)
+        if sat:
+            # bleed attitude I quickly
+            self.I_eul *= (1.0 - self.dt/3.0)
+            # bleed outer-loop I gently
+            self.I[0] *= (1.0 - self.dt/5.0)
+            self.I[1] *= (1.0 - self.dt/5.0)
+            self.I[2] *= (1.0 - self.dt/5.0)
+
+        now_us = int(self.get_clock().now().nanoseconds // 1000)
+        mot = ActuatorMotors()
+        mot.timestamp = now_us
+        mot.timestamp_sample = now_us
+        #u_mot = [1,1,1,1]
+        controls = list(map(float, u_mot))
+        controls += [float('nan')] * (12 - len(controls))  # pad to 12
+        mot.control = controls
+        mot.reversible_flags = 0  # set bits if you truly use reversible ESCs
+        self.act_motors_pub.publish(mot)
+        
+        self.prop1_debug_pub.publish(Float32(data=float(u_mot[0])))
+        self.prop2_debug_pub.publish(Float32(data=float(u_mot[1])))
+        self.prop3_debug_pub.publish(Float32(data=float(u_mot[2])))
+        self.prop4_debug_pub.publish(Float32(data=float(u_mot[3])))
 
         # Debug actual thrust sent
-        self.thrust_debug_pub.publish(Float32(data=float(th.xyz[2])))
-        self.torquez_debug_pub.publish(Float32(data=float(tr.xyz[2])))
-        self.torquey_debug_pub.publish(Float32(data=float(tr.xyz[1])))
-        self.torquex_debug_pub.publish(Float32(data=float(tr.xyz[0])))
+        
+        # NEW
+    def mix_to_motors(self, tau, u_thrust, dt):
+        """
+        tau: np.array([tx,ty,tz]) from your controller (|tau| ≤ 0.15)
+        u_thrust: scalar in [0,1] (your vertical command)
+        dt: seconds
+        returns: u[0..N-1] ∈ [0,1]
+        """
+        # Map your unitless tau to a physical wrench (N·m), clamp to limits
+        Mx = np.clip(self.Mx_max * (tau[0] / 0.15), -self.Mx_max, self.Mx_max)
+        My = np.clip(self.My_max * (tau[1] / 0.15), -self.My_max, self.My_max)
+        Mz = np.clip(self.Mz_max * (tau[2] / 0.15), -self.Mz_max, self.Mz_max)
+        Fz = np.clip(-self.T_max * float(u_thrust), -self.T_max, 0.0)  # up-thrust = negative
+
+        w_des = np.array([Mx, My, Mz, Fz], float)
+
+        # Least-squares allocation
+        u0  = np.full(self.N, self.u_hover, float)
+        rhs = w_des - self.B @ u0
+        du  = np.linalg.lstsq(self.B, rhs, rcond=None)[0]
+        u   = np.clip(u0 + du, 0.0, 1.0)
+        print(f"la soluzione in ingresso è {du}")
+
+        # Simple desaturation: drop yaw first, then relax thrust toward hover
+        if (u.min() <= 1e-6) or (u.max() >= 1.0-1e-6):
+            w2 = w_des.copy(); w2[2] *= 0.5  # halve Mz
+            u = np.clip(np.linalg.lstsq(self.B, w2, rcond=None)[0], 0.0, 1.0)
+            if (u.min() <= 1e-6) or (u.max() >= 1.0-1e-6):
+                w3 = w2.copy()
+                w3[3] = 0.7*w2[3] + 0.3*(-self.m*G)  # pull Fz toward hover
+                u = np.clip(np.linalg.lstsq(self.B, w3, rcond=None)[0], 0.0, 1.0)
+
+        # Slew limit
+        du_max = self.slew_per_s * dt
+        u = np.clip(self.u_prev + np.clip(u - self.u_prev, -du_max, du_max), 0.0, 1.0)
+        self.u_prev = u
+
+        sat = (u.min() <= 1e-6) or (u.max() >= 1.0-1e-6)
+        return u, sat
+
 
     def arm(self):
         msg = VehicleCommand()
