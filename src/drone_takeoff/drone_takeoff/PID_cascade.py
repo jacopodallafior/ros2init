@@ -14,6 +14,7 @@ G = 9.81                          # m/s^2
 TILT_LIMIT_RAD = math.radians(45) # safety tilt limit
 MIN_THRUST = 0.05                 # normalized thrust limits for PX4
 MAX_THRUST = 1.3
+A_XY_MAX   = 6.0
 HOVER_THRUST = 0.75   # da tarare; 0.5–0.6 in SITL è tipico
 I_MAX = 3.0   
 
