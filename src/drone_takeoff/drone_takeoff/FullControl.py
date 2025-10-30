@@ -16,7 +16,7 @@ MIN_THRUST = 0.05                 # normalized thrust limits for PX4
 MAX_THRUST = 1.0
 HOVER_THRUST = 0.725   # da tarare; 0.5–0.6 in SITL è tipico
 I_MAX = 3.0   
-A_XY_MAX   = 6.0   # m/s^2 limit for horizontal accel command
+A_XY_MAX   = 4.0   # m/s^2 limit for horizontal accel command
 I_XY_MAX   = 2.0   # cap on XY integrators
 I_LEAK_TAU = 5.0   # s, for gentle integral leakage
 
@@ -56,7 +56,7 @@ class PIDcontrol(Node):
             depth=1
         )
         # Outer loop gains
-        self.Kpz = 0.6#1.6
+        self.Kpz = 0.65#1.6
         self.Kiz = 0.02
         self.Kdz = 0.7#0.5
         
@@ -85,8 +85,8 @@ class PIDcontrol(Node):
 
 
         # Inner loop gains
-        self.Kp_eul   = np.array([0.75, 0.75, 0.35])   # disable yaw at first
-        self.Kd_body  = np.array([0.10, 0.10, 0.04]) # rate damping
+        self.Kp_eul   = np.array([0.25, 0.25, 0.2])   # disable yaw at first  0.75, 0.75, 0.35
+        self.Kd_body  = np.array([0.05, 0.02, 0.04]) # rate damping # 0.10 0.10
         self.Ki_eul   = np.array([0.12, 0.12, 0.00])   # keep off for now
         self.TORQUE_MAX = np.array([0.15, 0.15, 0.15])  # NO yaw torque initially
         self.I_eul = np.array([0.0, 0.0, 0.0])
@@ -95,11 +95,11 @@ class PIDcontrol(Node):
 
         #FILTER ON D
         self.p_lpf = self.q_lpf = self.r_lpf = 0.0
-        self.fcut_rates = 20.0 
+        self.fcut_rates = 30.0 
 
         # MMA useful variables
 
-        self.m = 0.6           # kg (put your mass)
+        self.m = 1#0.6           # kg (put your mass)
         self.u_hover = 0.73    # hover command (0..1)
         self.kf       = (self.m*G)/(4*self.u_hover)  # [N] thrust per motor at command=1
         self.km       = 0.016         # [m] yaw torque ratio (start 0.015–0.025)
@@ -113,7 +113,7 @@ class PIDcontrol(Node):
         self.B = np.vstack([
             -self.propy * self.kf,             # Mx
             self.propx * self.kf,             # My
-            self.s  * self.km,   # Mz
+            self.s  * self.km*self.kf,   # Mz
             -np.ones(4) * self.kf     # Fz (FRD: up-thrust is negative)
         ]).astype(float)
 
@@ -124,8 +124,19 @@ class PIDcontrol(Node):
         self.T_max  = (self.m*G)/self.u_hover
         # Slew limit helper
         self.u_prev = np.zeros(4)
-        self.slew_per_s = 20.0  # max Δu per second (tune)
+        self.slew_per_s = 40.0  # max Δu per second (tune)
 
+        print("cond(B)=", np.linalg.cond(self.B))       # deve essere basso (poche decine)
+        u0  = np.full(4, self.u_hover)
+        print("w_hover ~ [0,0,0,-mG]:", np.round(self.B@u0, 3))
+
+        # Test yaw: con +Mz i CCW devono aumentare, i CW diminuire
+        du_yaw = np.linalg.lstsq(self.B, np.array([0,0,0.2*self.Mz_max,-self.m*G]) - self.B@u0, rcond=None)[0]
+        print("s*du_yaw (tutti >0 atteso):", np.round(self.s*du_yaw,3))
+
+        # Test roll: con +Mx devono salire i motori con y<0 (2 e 3)
+        du_roll = np.linalg.lstsq(self.B, np.array([0.2*self.Mx_max,0,0,-self.m*G]) - self.B@u0, rcond=None)[0]
+        print("(-propy)*du_roll (tutti >0 atteso):", np.round((-self.propy)*du_roll,3))
 
         
         # Publishers
@@ -152,8 +163,8 @@ class PIDcontrol(Node):
 
         self.reftraj = [
             [0.0,0.0,-5.0],   # decollo a 5m
-            [0.0,10.0,-5.0],   # avanti 5m
-            [0.0,5.0,-5.0],   # diagonale
+            [50.0,0.0,-5.0],   # avanti 5m
+            [50.0,50.0,-5.0],   # diagonale
             [0.0,0.0,-5.0],
             [0.0,0.0,-5.0]    # ritorno
         ]
@@ -221,9 +232,9 @@ class PIDcontrol(Node):
                 del self.inside_since
         
         if self.refcount == 2.0:
-            self.yaw_d = math.radians(40.0)
+            self.yaw_d = math.radians(50.0)
         elif self.refcount == 3.0:
-            self.yaw_d = math.radians(80.0)
+            self.yaw_d = math.radians(0.0)
 
             
 
@@ -376,6 +387,14 @@ class PIDcontrol(Node):
         u_mot, sat = self.mix_to_motors(tau=np.array([tau[0], tau[1], tau[2]], float),
             u_thrust=u,
             dt=self.dt)
+        
+        u_total = float(np.clip(np.mean(u_mot), 0.0, 1.0))  # collettivo “medio”
+
+        th = VehicleThrustSetpoint()
+        th.timestamp = now_us
+        th.timestamp_sample = now_us
+        th.xyz = [0.0, 0.0, -u_total]   # FRD: spinta verso l’alto = z negativo (coerente con PX4)
+        self.thrust_pub.publish(th)
 
         if sat:
             # bleed attitude I quickly
