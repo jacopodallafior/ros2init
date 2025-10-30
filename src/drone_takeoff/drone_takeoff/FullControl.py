@@ -86,7 +86,7 @@ class PIDcontrol(Node):
 
         # Inner loop gains
         self.Kp_eul   = np.array([0.25, 0.25, 0.2])   # disable yaw at first  0.75, 0.75, 0.35
-        self.Kd_body  = np.array([0.05, 0.02, 0.04]) # rate damping # 0.10 0.10
+        self.Kd_body  = np.array([0.02, 0.02, 0.04]) # rate damping # 0.10 0.10
         self.Ki_eul   = np.array([0.12, 0.12, 0.00])   # keep off for now
         self.TORQUE_MAX = np.array([0.15, 0.15, 0.15])  # NO yaw torque initially
         self.I_eul = np.array([0.0, 0.0, 0.0])
@@ -113,7 +113,7 @@ class PIDcontrol(Node):
         self.B = np.vstack([
             -self.propy * self.kf,             # Mx
             self.propx * self.kf,             # My
-            self.s  * self.km*self.kf,   # Mz
+            self.s  * (self.km*self.kf),   # Mz
             -np.ones(4) * self.kf     # Fz (FRD: up-thrust is negative)
         ]).astype(float)
 
@@ -443,16 +443,15 @@ class PIDcontrol(Node):
         rhs = w_des - self.B @ u0
         du  = np.linalg.lstsq(self.B, rhs, rcond=None)[0]
         u   = np.clip(u0 + du, 0.0, 1.0)
-        print(f"la soluzione in ingresso è {du}")
-
+        
         # Simple desaturation: drop yaw first, then relax thrust toward hover
         if (u.min() <= 1e-6) or (u.max() >= 1.0-1e-6):
             w2 = w_des.copy(); w2[2] *= 0.5  # halve Mz
-            u = np.clip(np.linalg.lstsq(self.B, w2, rcond=None)[0], 0.0, 1.0)
+            u = np.clip(u0+ np.linalg.lstsq(self.B, rhs, rcond=None)[0], 0.0, 1.0)
             if (u.min() <= 1e-6) or (u.max() >= 1.0-1e-6):
                 w3 = w2.copy()
                 w3[3] = 0.7*w2[3] + 0.3*(-self.m*G)  # pull Fz toward hover
-                u = np.clip(np.linalg.lstsq(self.B, w3, rcond=None)[0], 0.0, 1.0)
+                u = np.clip(u0+ np.linalg.lstsq(self.B, rhs, rcond=None)[0], 0.0, 1.0)
 
         # Slew limit
         du_max = self.slew_per_s * dt
