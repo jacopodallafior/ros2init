@@ -56,8 +56,63 @@ where `ω = [p, q, r]`.
 These were tuned to achieve smooth yet responsive behavior during the figure-8 maneuver.
 
 ---
+## ⚖️ Manual Mixing Algorithm (MMA)
+Implements a **custom 4-motor allocation matrix** converting total thrust and body torques to per-motor normalized commands.
 
-## 🌀 Figure-8 Trajectory Generator
+\\[
+B = 
+\\begin{bmatrix}
+ -y_i k_f & \\text{(Mx)} \\\\
+  x_i k_f & \\text{(My)} \\\\
+  s_i k_m k_f & \\text{(Mz)} \\\\
+ -k_f & \\text{(Fz)}
+\\end{bmatrix}
+\\]
+
+where:
+- `(x_i, y_i)` = motor position [m]
+- `s_i` = spin direction (+1 CCW, -1 CW)
+- `k_f` = thrust coefficient
+- `k_m` = torque ratio (≈ 0.016)
+
+**Mixer steps:**
+1. Convert desired `[Mx, My, Mz, Fz]` to per-motor effort by least-squares:
+   \\[
+   u = u_{hover} + B^+ (w_{des} - B u_{hover})
+   \\]
+2. Clamp and desaturate (drop yaw first, then relax thrust).
+3. Apply **slew-rate limiter**:
+   \\[
+   u_i(t) = \\text{clip}(u_i(t-1) + Δu_{max}, [0,1])
+   \\]
+4. Publish to `/fmu/in/actuator_motors`.
+
+**Built-in checks:**
+- Condition number of `B`
+- Sanity tests for roll/yaw directions (`s·du_yaw > 0`, etc.)
+- Hover wrench validation (`B@u_hover ≈ [0,0,0,-mg]`)
+
+**Mixer limits:**
+- Slew limit: 40 /s (Δu ≤ 0.1 @ 400 Hz)
+- Mx, My ≈ 0.4 * l * m * g
+- Mz ≈ 0.15 * Mx
+- T_max = m * g / u_hover
+
+---
+
+
+## 🧰 Anti-Windup & Safety Logic
+
+| Layer | Mechanism | Description |
+|--------|------------|-------------|
+| Position Z | Conditional + Clamping + Leakage | Stops integration when thrust saturates |
+| Position XY | Gate + Leakage | Integrate only near steady state |
+| Attitude | Clamping + Fast bleed | Zero I when torque saturated |
+| Mixer | Slew-rate + desaturation | Avoids PWM spikes that trigger PX4 land detection |
+
+---
+
+## 8 Trajectory Generator
 
 Implements a **Lissajous curve** to generate a continuous infinity symbol in the XY-plane:
 
@@ -91,7 +146,7 @@ Yaw tracking uses a “gate” (10° default) to prevent sharp discontinuities �
   - `VehicleLocalPosition`
   - `OffboardControlMode`
   - `VehicleCommand`
-- **Execution rate:** 125 Hz (0.008 s loop)
+- **Execution rate:** 400 Hz
 - **Offboard control:** activated automatically after arming.
 
 ---

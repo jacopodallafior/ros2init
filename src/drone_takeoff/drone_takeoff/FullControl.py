@@ -85,8 +85,8 @@ class PIDcontrol(Node):
 
 
         # Inner loop gains
-        self.Kp_eul   = np.array([0.25, 0.25, 0.2])   # disable yaw at first  0.75, 0.75, 0.35
-        self.Kd_body  = np.array([0.02, 0.02, 0.04]) # rate damping # 0.10 0.10
+        self.Kp_eul   = np.array([0.20, 0.20, 0.2])   # disable yaw at first  0.75, 0.75, 0.35
+        self.Kd_body  = np.array([0.03, 0.02, 0.04]) # rate damping # 0.10 0.10
         self.Ki_eul   = np.array([0.12, 0.12, 0.00])   # keep off for now
         self.TORQUE_MAX = np.array([0.15, 0.15, 0.15])  # NO yaw torque initially
         self.I_eul = np.array([0.0, 0.0, 0.0])
@@ -162,10 +162,10 @@ class PIDcontrol(Node):
 
 
         self.reftraj = [
-            [0.0,0.0,-5.0],   # decollo a 5m
-            [50.0,0.0,-5.0],   # avanti 5m
-            [50.0,50.0,-5.0],   # diagonale
-            [0.0,0.0,-5.0],
+            [0.0,0.0,-15.0],   # decollo a 5m
+            [50.0,50.0,-5.0],   # avanti 5m
+            [50.0,150.0,-5.0],   # diagonale
+            [0.0,50.0,-5.0],
             [0.0,0.0,-5.0]    # ritorno
         ]
 
