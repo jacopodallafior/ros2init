@@ -85,10 +85,17 @@ class PIDcontrol(Node):
 
 
         # Inner loop gains
-        self.Kp_eul   = np.array([0.20, 0.20, 0.2])   # disable yaw at first  0.25, 0.25, 0.2
-        self.Kd_body  = np.array([0.03, 0.02, 0.04]) # rate damping # 0.10 0.10
-        self.Ki_eul   = np.array([0.12, 0.12, 0.00])   # keep off for now
+        self.Kp_eul   = np.array([0.25, 0.25, 0.2])   # disable yaw at first  0.25, 0.25, 0.2
+        self.Kd_body  = np.array([0.04, 0.04, 0.04]) # rate damping # 0.10 0.10
+        self.Ki_eul   = np.array([0.12, 0.12, 0.00])   # keep off for now 0.12, 0.12, 0.00
         self.TORQUE_MAX = np.array([0.15, 0.15, 0.15])  # NO yaw torque initially
+
+        """
+         self.Kp_eul   = np.array([0.20, 0.20, 0.2])   # disable yaw at first  0.25, 0.25, 0.2
+        self.Kd_body  = np.array([0.01, 0.01, 0.04]) # rate damping # 0.10 0.10
+        self.Ki_eul   = np.array([0.12, 0.12, 0.00])   # keep off for now 0.12, 0.12, 0.00
+        self.TORQUE_MAX = np.array([0.15, 0.15, 0.15])  # NO yaw torque initially
+        """
         self.I_eul = np.array([0.0, 0.0, 0.0])
         self.I_EUL_MAX = 0.3
         #self.TORQUE_MAX = np.array([1.0, 1.0, 1.0]) # normalized limits
@@ -169,7 +176,7 @@ class PIDcontrol(Node):
         self.Ax = 40.0                # half-width in X (meters)
         self.Ay = 40.0                # half-height in Y (meters)
 
-        self.period = 30.0            # seconds (ω = 2π/period). Increase if accel is too high.
+        self.period = 40.0            # seconds (ω = 2π/period). Increase if accel is too high.
         self.w_traj = 2.0*math.pi / self.period
         self.phase = 0.0              # phase for Y in the Lissajous form
         self.follow_tangent_yaw = True   # True → yaw points along motion, False → yaw=0
