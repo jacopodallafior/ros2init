@@ -64,10 +64,10 @@ class PIDcontrol(Node):
         self.Kiz = 0.02
         self.Kdz = 0.7#0.5
         
-        self.Kpx = 0.3
+        self.Kpx = 0.5
         self.Kdx = 0.75
         self.Kix = 0.01
-        self.Kpy = 0.3
+        self.Kpy = 0.5
         self.Kdy = 0.75
         self.Kiy = 0.01
 
@@ -327,9 +327,6 @@ class PIDcontrol(Node):
         self.error_y = self.refpoint[1] - msg.y
         self.error_z = self.refpoint[2] - msg.z
 
-        print(f"l'errore in x è {self.error_x}")
-        print(f"l'errore in y è {self.error_y}")
-        print(f"l'errore in z è {self.error_z}")
 
         # Only run the "advance to next waypoint" logic in waypoint mode
         if self.mode == 'waypoints':
