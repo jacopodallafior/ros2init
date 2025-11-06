@@ -30,7 +30,8 @@ setup(
                             "Circulartrajectory = drone_takeoff.Circulartrajectory:main",
                             "PIDCircular = drone_takeoff.PIDCircular:main",
                             "CircularPIDcascade = drone_takeoff.CircularPIDcascade:main",
-                            "FullControl = drone_takeoff.FullControl:main"
+                            "FullControl = drone_takeoff.FullControl:main",
+                            "DebugFullControl = drone_takeoff.debugfullcontrol:main"
         ],
     },
 )

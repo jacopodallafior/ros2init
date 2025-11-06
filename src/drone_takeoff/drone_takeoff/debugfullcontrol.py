@@ -5,7 +5,11 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from px4_msgs.msg import OffboardControlMode, TrajectorySetpoint, VehicleCommand, ActuatorMotors,VehicleLocalPosition,VehicleAttitude,VehicleTorqueSetpoint,VehicleOdometry, VehicleThrustSetpoint, VehicleStatus,VehicleAttitudeSetpoint
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
-from std_msgs.msg import Float32
+from std_msgs.msg import Float32,Float32MultiArray
+from geometry_msgs.msg import Point, Vector3
+#from nav_msgs.msg import Path
+ 
+
 import numpy as np
 import time
 import math
@@ -48,7 +52,7 @@ class PIDcontrol(Node):
 
 
     def __init__(self):
-        super().__init__('FullControl')
+        super().__init__('FullControl_debug')
         qos_profile = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,  # match PX4 publisher
             durability=DurabilityPolicy.VOLATILE,
@@ -145,6 +149,28 @@ class PIDcontrol(Node):
         du_roll = np.linalg.lstsq(self.B, np.array([0.2*self.Mx_max,0,0,-self.m*G]) - self.B@u0, rcond=None)[0]
         print("(-propy)*du_roll (tutti >0 atteso):", np.round((-self.propy)*du_roll,3))
 
+
+        # DEBUG PUBLISHER
+
+        # position / reference
+        self.ref_pub      = self.create_publisher(Point, '/debug/ref_xyz', 10)
+        self.xyz_pub      = self.create_publisher(Point, '/debug/xyz', 10)
+
+        # attitude actual vs desired
+        self.rpy_pub      = self.create_publisher(Vector3, '/debug/rpy', 10)
+        self.rpy_ref_pub  = self.create_publisher(Vector3, '/debug/rpy_ref', 10)
+
+        # motor usage + saturation + collective
+        self.u_pub        = self.create_publisher(Float32MultiArray, '/debug/u_motors', 10)
+        self.u_mean_pub   = self.create_publisher(Float32, '/debug/u_mean', 10)
+        self.sat_pub      = self.create_publisher(Float32, '/debug/sat', 10)
+
+        # allocator internals: commanded wrench, achieved wrench, residual
+        self.wcmd_pub     = self.create_publisher(Float32MultiArray, '/debug/w_cmd', 10)   # [Mx, My, Mz, Fz]
+        self.walloc_pub   = self.create_publisher(Float32MultiArray, '/debug/w_alloc', 10) # B @ u
+        self.resid_pub    = self.create_publisher(Float32MultiArray, '/debug/residual', 10)
+
+
         
         # Publishers
         self.cmd_pub = self.create_publisher(VehicleCommand, '/fmu/in/vehicle_command', qos_profile)
@@ -224,6 +250,15 @@ class PIDcontrol(Node):
         y_cand = self.center[1] + self.Ay * math.sin(2.0 * self.w_traj * t_cand + self.phase)
         z_cand = self.center[2]
 
+        # REFERENCES FOR THE EIGTH TRAJECTORIES
+        vx_ref =  self.Ax * self.w_traj * math.cos(self.w_traj * t_cand)
+        vy_ref = 2.0 * self.Ay * self.w_traj * math.cos(2.0 * self.w_traj * t_cand + self.phase)
+        ax_ref = -self.Ax * (self.w_traj**2) * math.sin(self.w_traj * t_cand)
+        ay_ref = -(2.0*self.w_traj)**2 * self.Ay * math.sin(2.0 * self.w_traj * t_cand + self.phase)
+
+        self.vx_ref, self.vy_ref = vx_ref, vy_ref
+        self.ax_ref, self.ay_ref = ax_ref, ay_ref
+
         # ---- Candidate yaw at t_cand ----
         if self.follow_tangent_yaw:
             vx = self.Ax * self.w_traj * math.cos(self.w_traj * t_cand)
@@ -280,6 +315,12 @@ class PIDcontrol(Node):
 
         self.last_pos = np.array([msg.x, msg.y, msg.z], dtype=float)
 
+        self.xyz_pub.publish(Point(x=msg.x, y=msg.y, z=msg.z))
+        self.ref_pub.publish(Point(x=float(self.refpoint[0]),
+                           y=float(self.refpoint[1]),
+                           z=float(self.refpoint[2])))
+
+
 
         # Position errors w.r.t. current reference
         self.error_x = self.refpoint[0] - msg.x 
@@ -328,7 +369,7 @@ class PIDcontrol(Node):
       #  self.I[0] += self.error_x * self.dt
        # self.I[1] += self.error_y * self.dt
         #self.I[2] += self.error_z * self.dt
-
+        '''
         dex_dt = -self.vxa
         dey_dt = -self.vya
         dez_dt = -self.vza
@@ -340,6 +381,23 @@ class PIDcontrol(Node):
 
         self.axPIDclam = clamp(self.axPID, -A_XY_MAX, A_XY_MAX)
         self.ayPIDclam = clamp(self.ayPID, -A_XY_MAX, A_XY_MAX)
+        '''
+        # derivative of error uses v_ref - v
+        dex_dt = self.vx_ref - self.vxa if hasattr(self, 'vx_ref') else -self.vxa
+        dey_dt = self.vy_ref - self.vya if hasattr(self, 'vy_ref') else -self.vya
+        dez_dt = -self.vza
+
+        # add a_ref feed-forward
+        ax_ff = self.ax_ref if hasattr(self, 'ax_ref') else 0.0
+        ay_ff = self.ay_ref if hasattr(self, 'ay_ref') else 0.0
+
+        self.axPID = ax_ff + self.Kpx*self.error_x + self.Kdx*dex_dt + self.Kix*self.I[0]
+        self.ayPID = ay_ff + self.Kpy*self.error_y + self.Kdy*dey_dt + self.Kiy*self.I[1]
+        self.azPD =  self.Kpz*self.error_z + self.Kdz*dez_dt 
+
+        self.axPIDclam = clamp(self.axPID, -A_XY_MAX, A_XY_MAX)
+        self.ayPIDclam = clamp(self.ayPID, -A_XY_MAX, A_XY_MAX)
+
 
     def controller_PID_attitude(self,rolld,pitchd,yawd):
         
@@ -456,7 +514,10 @@ class PIDcontrol(Node):
 
         #self.yaw_d = self.yaw_now
         roll_d, pitch_d, _ = self.accel_yaw_to_rpy(ax, ay, az, self.yaw_d)  # not use yaw_now
-        
+        rollp, pitchp, yawp = quat_to_euler_zyx(self.q)
+        self.rpy_pub.publish(Vector3(x=float(rollp),  y=float(pitchp),  z=float(yawp)))
+        self.rpy_ref_pub.publish(Vector3(x=float(roll_d), y=float(pitch_d), z=float(self.yaw_d)))
+
         # ---- Inner loop: Euler-error PD(+I) with body-rate damping ----
         tau = self.controller_PID_attitude(roll_d, pitch_d, self.yaw_d)  # normalized torques
 
@@ -465,10 +526,28 @@ class PIDcontrol(Node):
 
         
 
-        u_mot, sat = self.mix_to_motors(tau=np.array([tau[0], tau[1], tau[2]], float),
+        u_mot, sat, w_cmd, w_alloc, resid = self.mix_to_motors(
+            tau=np.array([tau[0], tau[1], tau[2]], float),
             u_thrust=u,
-            dt=self.dt)
-        
+            dt=self.dt
+        )
+
+        # motor arrays
+        arr = Float32MultiArray(); arr.data = u_mot.astype(np.float32).tolist()
+        self.u_pub.publish(arr)
+
+        self.u_mean_pub.publish(Float32(data=float(np.mean(u_mot))))
+        self.sat_pub.publish(Float32(data=1.0 if sat else 0.0))
+
+        # allocator internals
+        arr = Float32MultiArray(); arr.data = w_cmd.astype(np.float32).tolist()
+        self.wcmd_pub.publish(arr)
+        arr = Float32MultiArray(); arr.data = w_alloc.astype(np.float32).tolist()
+        self.walloc_pub.publish(arr)
+        arr = Float32MultiArray(); arr.data = resid.astype(np.float32).tolist()
+        self.resid_pub.publish(arr)
+
+                
         u_total = float(np.clip(np.mean(u_mot), 0.0, 1.0))  # collettivo “medio”
 
         th = VehicleThrustSetpoint()
@@ -542,7 +621,9 @@ class PIDcontrol(Node):
         self.u_prev = u
 
         sat = (u.min() <= 1e-6) or (u.max() >= 1.0-1e-6)
-        return u, sat
+        w_alloc = self.B @ u
+        residual = w_des - w_alloc
+        return u, sat, w_des , w_alloc, residual
 
 
     def arm(self):
