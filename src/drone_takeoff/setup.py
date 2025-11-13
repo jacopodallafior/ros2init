@@ -32,7 +32,8 @@ setup(
                             "CircularPIDcascade = drone_takeoff.CircularPIDcascade:main",
                             "FullControl = drone_takeoff.FullControl:main",
                             "DebugFullControl = drone_takeoff.debugfullcontrol:main",
-                            "FullPIDControl_debug = drone_takeoff.levelPIDcascade:main"
+                            "FullPIDControl_debug = drone_takeoff.levelPIDcascade:main",
+                            "FullPIDOptimal = drone_takeoff.FullPIDOptimal:main"
         ],
     },
 )
