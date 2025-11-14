@@ -20,7 +20,7 @@ MIN_THRUST = 0.05                 # normalized thrust limits for PX4
 MAX_THRUST = 1.0
 HOVER_THRUST = 0.725   # da tarare; 0.5–0.6 in SITL è tipico
 I_MAX = 3.0   
-A_XY_MAX   = 5.0   # m/s^2 limit for horizontal accel command
+A_XY_MAX   = 50.0#5   # m/s^2 limit for horizontal accel command
 I_XY_MAX   = 2.0   # cap on XY integrators
 I_LEAK_TAU = 5.0   # s, for gentle integral leakage
 
@@ -60,7 +60,7 @@ class PIDcontrol(Node):
             depth=1
         )
         # Outer loop gains
-        self.Kpz = 0.5#65
+        self.Kpz = 0.95#65
         self.Kiz = 0.02
         self.Kdz = 0.7#0.5
         
@@ -161,7 +161,7 @@ class PIDcontrol(Node):
         self.u_thrust_cmd = HOVER_THRUST
 
         # DEBUG PUBLISHER
-
+        self.dircos_pub   = self.create_publisher(Float32, '/debug/dir_cos', 10)
         # position / reference
         self.ref_pub      = self.create_publisher(Point, '/debug/ref_xyz', 10)
         self.xyz_pub      = self.create_publisher(Point, '/debug/xyz', 10)
@@ -209,10 +209,10 @@ class PIDcontrol(Node):
                 # ---- Trajectory generator (figure-8) ----
         self.mode = 'fig8'            # 'waypoints' or 'fig8'
         self.center = np.array([1.0, 1.0, -5.0], dtype=float)  # [x0, y0, z0] (z<0 in NED)
-        self.Ax = 40.0                # half-width in X (meters)
-        self.Ay = 40.0                # half-height in Y (meters)
+        self.Ax = 60.0   #40             # half-width in X (meters)
+        self.Ay = 60.0   #40             # half-height in Y (meters)
 
-        self.period = 40.0            # seconds (ω = 2π/period). Increase if accel is too high.
+        self.period = 25.0            # seconds (ω = 2π/period). Increase if accel is too high.
         self.w_traj = 2.0*math.pi / self.period
         self.phase = 0.0              # phase for Y in the Lissajous form
         self.follow_tangent_yaw = True   # True → yaw points along motion, False → yaw=0

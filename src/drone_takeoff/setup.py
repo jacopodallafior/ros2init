@@ -33,7 +33,8 @@ setup(
                             "FullControl = drone_takeoff.FullControl:main",
                             "DebugFullControl = drone_takeoff.debugfullcontrol:main",
                             "FullPIDControl_debug = drone_takeoff.levelPIDcascade:main",
-                            "FullPIDOptimal = drone_takeoff.FullPIDOptimal:main"
+                            "FullPIDOptimal = drone_takeoff.FullPIDOptimal:main",
+                            "testQP = drone_takeoff.testQP:main"
         ],
     },
 )

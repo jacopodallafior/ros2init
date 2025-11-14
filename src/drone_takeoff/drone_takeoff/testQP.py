@@ -24,7 +24,7 @@ MIN_THRUST = 0.05                 # normalized thrust limits for PX4
 MAX_THRUST = 1.0
 HOVER_THRUST = 0.725   # da tarare; 0.5–0.6 in SITL è tipico
 I_MAX = 3.0   
-A_XY_MAX   = 50.0   # m/s^2 limit for horizontal accel command
+A_XY_MAX   = 20.0   # m/s^2 limit for horizontal accel command
 I_XY_MAX   = 2.0   # cap on XY integrators
 I_LEAK_TAU = 5.0   # s, for gentle integral leakage
 
@@ -56,7 +56,7 @@ class PIDcontrol(Node):
 
 
     def __init__(self):
-        super().__init__('FullPIDOptimal')
+        super().__init__('testQP')
         qos_profile = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,  # match PX4 publisher
             durability=DurabilityPolicy.VOLATILE,
@@ -64,7 +64,7 @@ class PIDcontrol(Node):
             depth=1
         )
         # Outer loop gains
-        self.Kpz = 0.95#65
+        self.Kpz = 0.75#65
         self.Kiz = 0.02
         self.Kdz = 0.7#0.5
         
@@ -235,8 +235,6 @@ class PIDcontrol(Node):
 
 
         # DEBUG PUBLISHER
-        self.dircos_pub   = self.create_publisher(Float32, '/debug/dir_cos', 10)
-
 
         # position / reference
         self.ref_pub      = self.create_publisher(Point, '/debug/ref_xyz', 10)
@@ -255,6 +253,9 @@ class PIDcontrol(Node):
         self.wcmd_pub     = self.create_publisher(Float32MultiArray, '/debug/w_cmd', 10)   # [Mx, My, Mz, Fz]
         self.walloc_pub   = self.create_publisher(Float32MultiArray, '/debug/w_alloc', 10) # B @ u
         self.resid_pub    = self.create_publisher(Float32MultiArray, '/debug/residual', 10)
+
+                # roll–pitch direction cosine
+        self.dircos_pub   = self.create_publisher(Float32, '/debug/dir_cos', 10)
 
 
         
@@ -283,7 +284,7 @@ class PIDcontrol(Node):
 
 
                 # ---- Trajectory generator (figure-8) ----
-        self.mode = 'fig8'            # 'waypoints' or 'fig8'
+        #self.mode = 'fig8'            # 'waypoints' or 'fig8'
         self.center = np.array([1.0, 1.0, -5.0], dtype=float)  # [x0, y0, z0] (z<0 in NED)
         self.Ax = 60.0#40.0                # half-width in X (meters)
         self.Ay = 60.0#40.0                # half-height in Y (meters)
@@ -300,6 +301,19 @@ class PIDcontrol(Node):
         self.refpoint = [float(self.center[0]), float(self.center[1]), float(self.center[2])]
        
         self.refcount = 0
+                # === Attitude test mode: climb to 5 m, then constant roll/pitch + yaw oscillation ===
+        self.mode = 'attitude_test'   # override previous 'fig8' / 'waypoints'
+
+        self.test_alt = -5.0          # NED: -5 m = 5 m above ground
+        self.test_roll  = math.radians(35.0)  # constant roll (deg → rad)
+        self.test_pitch = math.radians(25.0)  # constant pitch
+        self.test_yaw_amp   = math.radians(20.0)  # yaw oscillation amplitude
+        self.test_yaw_omega = 1.5                # yaw oscillation frequency [rad/s]
+
+        self.alt_reached = False
+        self.test_phase_start = None
+        self.takeoff_xy_set = False
+
 
        
            
@@ -404,6 +418,13 @@ class PIDcontrol(Node):
          #   self.update_reference()
 
         self.last_pos = np.array([msg.x, msg.y, msg.z], dtype=float)
+
+         # For attitude_test: fix reference at current x,y and target z
+        if self.mode == 'attitude_test' and not self.takeoff_xy_set:
+            # lock the XY position where the drone is when we get the first pose
+            self.refpoint = [float(msg.x), float(msg.y), float(self.test_alt)]
+            self.takeoff_xy_set = True
+
 
         self.xyz_pub.publish(Point(x=msg.x, y=msg.y, z=msg.z))
         self.ref_pub.publish(Point(x=float(self.refpoint[0]),
@@ -575,7 +596,27 @@ class PIDcontrol(Node):
                 self.I[1] *= (1.0 - dt/I_LEAK_TAU)
 
         # accel + yaw → desired roll,pitch and store for inner loop
+                # accel + yaw → nominal desired roll,pitch from position controller
         roll_d, pitch_d, _ = self.accel_yaw_to_rpy(self.axPIDclam, self.ayPIDclam, az_cmd, self.yaw_d)
+
+        if self.mode == 'attitude_test':
+            # 1) detect when we reached the 5 m altitude
+            if (not self.alt_reached) and (abs(self.error_z) < 0.15) and (abs(self.vza) < 0.2):
+                self.alt_reached = True
+                self.test_phase_start = time.time()
+
+            if self.alt_reached:
+                t_phase = time.time() - self.test_phase_start
+
+                # constant roll/pitch
+                roll_d  = self.test_roll
+                pitch_d = self.test_pitch
+
+                # yaw oscillation around 0: ψ(t) = A sin(ω t)
+                self.yaw_d = self.test_yaw_amp * math.sin(self.test_yaw_omega * t_phase)
+            # before altitude is reached, keep yaw_d as is (e.g. 0 or 90°) and let roll/pitch follow outer loop
+
+        # finally store for the inner loop
         self.roll_d = roll_d
         self.pitch_d = pitch_d
         self.u_thrust_cmd = u  # collective used by inner loop
@@ -611,6 +652,7 @@ class PIDcontrol(Node):
         )
 
         # debug topics
+                
         arr = Float32MultiArray(); arr.data = u_mot.astype(np.float32).tolist()
         self.u_pub.publish(arr)
         self.sat_pub.publish(Float32(data=1.0 if sat else 0.0))
@@ -647,6 +689,7 @@ class PIDcontrol(Node):
         self.prop4_debug_pub.publish(Float32(data=float(u_mot[3])))
 
         # Debug actual thrust sent
+
     def publish_dir_cos(self, w_des, u_cmd):
         # desired roll–pitch torque from command
         t_des = w_des[0:2]              # [Mx_des, My_des]
@@ -662,6 +705,8 @@ class PIDcontrol(Node):
             cos_dir = float(np.dot(t_des, t_alloc) / (nd * na))
 
         self.dircos_pub.publish(Float32(data=cos_dir))
+
+        
         # NEW
     def mix_to_motors(self, tau, u_thrust, dt):
         """
@@ -723,10 +768,7 @@ class PIDcontrol(Node):
         res = self._osqp.solve()
 
         ok = (res.info.status_val == osqp.constant('OSQP_SOLVED')) and (res.x is not None)
-        if ok:
-            print("QP solved in")
         if not ok:
-            print("QP failed; status =")   
             # fallback: your previous least-squares + staged desaturation
             u0  = self.u0_mix.copy()
             rhs = w_des - self.B @ u0
@@ -750,7 +792,10 @@ class PIDcontrol(Node):
             resid = w_des - w_alloc
             sat = (u_cmd.min() <= 1e-6) or (u_cmd.max() >= 1.0-1e-6)
             self.u_prev = u_cmd
+
+            # >>> add this line <<<
             self.publish_dir_cos(w_des, u_cmd)
+
             return u_cmd, sat, w_des, w_alloc, resid
 
         # QP success
@@ -765,8 +810,12 @@ class PIDcontrol(Node):
         sat = (u_cmd.min() <= 1e-6) or (u_cmd.max() >= 1.0-1e-6)
 
         self.u_prev = u_cmd
+
+        # already here (good)
         self.publish_dir_cos(w_des, u_cmd)
+
         return u_cmd, sat, w_des, w_alloc, resid
+
 
 
 
