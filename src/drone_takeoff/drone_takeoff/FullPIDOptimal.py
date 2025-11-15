@@ -212,7 +212,7 @@ class PIDcontrol(Node):
             warm_start=True,
             eps_abs=1e-4,
             eps_rel=1e-4,
-            max_iter=40,
+            max_iter=300,
             adaptive_rho=False,
             rho=0.1
         )
@@ -316,6 +316,99 @@ class PIDcontrol(Node):
 
         self.current_position_recived = self.create_subscription(VehicleLocalPosition, '/fmu/out/vehicle_local_position_v1',self.callback_pos,qos_profile)
         self.odom_sub = self.create_subscription(VehicleOdometry,'/fmu/out/vehicle_odometry',self.cb_odom,qos_profile)
+
+    def debug_qp_failure(self, H, q, l, u, w_des, dt):
+        """
+        Debug helper called when OSQP does not return OSQP_SOLVED.
+
+        H, q, l, u are the QP data for the *current* tick,
+        w_des is the commanded wrench, dt is inner-loop dt.
+        """
+
+        print("  [DEBUG] Checking numeric sanity (NaN/Inf)")
+
+        def check_nan_inf(x, name):
+            if np.any(np.isnan(x)):
+                print(f"    {name} has NaN!")
+            if np.any(np.isinf(x)):
+                print(f"    {name} has Inf!")
+
+        check_nan_inf(H, "H")
+        check_nan_inf(q, "q")
+        check_nan_inf(l, "l")
+        check_nan_inf(u, "u")
+        check_nan_inf(w_des, "w_des")
+
+        print("  [DEBUG] H eigenvalues and conditioning")
+        try:
+            eigvals = np.linalg.eigvalsh(H)
+            print(f"    eig(H) = {eigvals}")
+            lam_min = np.min(np.abs(eigvals))
+            lam_max = np.max(np.abs(eigvals))
+            if lam_min > 1e-12:
+                condH = lam_max / lam_min
+            else:
+                condH = np.inf
+            print(f"    cond(H) ≈ {condH}")
+        except Exception as e:
+            print(f"    cannot eig(H): {e}")
+
+        print("  [DEBUG] commanded wrench")
+        print(f"    w_des      = {w_des}")
+        print(f"    ||w_des||  = {np.linalg.norm(w_des)}")
+
+        # Check constraint bounds consistency: any row where l > u?
+        bad_rows = np.where(l > u)[0]
+        if bad_rows.size > 0:
+            print("  [DEBUG] Found l > u at rows:", bad_rows)
+            for idx in bad_rows:
+                print(f"    row {idx}: l={l[idx]}, u={u[idx]}")
+        else:
+            print("  [DEBUG] No l>u: global bounds are consistent.")
+
+        # Inspect per-motor intersection of box and slew intervals
+        motors = self.motors
+        du_max = self.slew_per_s * dt
+
+        # reconstruct what we think box/slew are
+        u_min = self.u_min
+        u_max = self.u_max
+        u_prev = self.u_prev
+
+        print("  [DEBUG] per-motor intervals:")
+        print(f"    dt_inner    = {dt}")
+        print(f"    slew_per_s  = {self.slew_per_s}")
+        print(f"    du_max      = {du_max}")
+        print(f"    u_prev      = {u_prev}")
+
+        for i in range(motors):
+            lo_box = u_min[i]
+            hi_box = u_max[i]
+            lo_slew = u_prev[i] - du_max
+            hi_slew = u_prev[i] + du_max
+
+            lo_feas = max(lo_box, lo_slew)
+            hi_feas = min(hi_box, hi_slew)
+
+            print(f"    motor {i}:")
+            print(f"      box  : [{lo_box:.4f}, {hi_box:.4f}]")
+            print(f"      slew : [{lo_slew:.4f}, {hi_slew:.4f}]")
+            print(f"      ∩    : [{lo_feas:.4f}, {hi_feas:.4f}]")
+
+            if lo_feas > hi_feas:
+                print("      --> EMPTY INTERVAL! box ∩ slew = ∅ for this motor.")
+
+        # Optional: try a simple feasible candidate
+        # project u_prev onto [0,1] and then onto slew
+        u_proj = np.clip(u_prev, u_min, u_max)
+        u_proj = np.clip(u_proj,
+                        u_prev - du_max,
+                        u_prev + du_max)
+        print(f"  [DEBUG] simple candidate u_proj = {u_proj}")
+
+        # You could also compute A*u_proj and check if l <= A u_proj <= u,
+        # but since A is fixed [I;-I;I;-I], the per-motor check above
+        # already tells you if intersections are non-empty.
 
 
     def update_reference(self):
@@ -722,11 +815,32 @@ class PIDcontrol(Node):
         self._osqp.warm_start(x=self.u_prev, y=self.y_prev_qp)
         res = self._osqp.solve()
 
-        ok = (res.info.status_val == osqp.constant('OSQP_SOLVED')) and (res.x is not None)
+        #ok = (res.info.status_val == osqp.constant('OSQP_SOLVED')) and (res.x is not None)
+
+        #status_val = res.info.status_val
+        #status_str = res.info.status
+        #ok = (status_val == osqp.constant('OSQP_SOLVED')) and (res.x is not None)
+        status_val = res.info.status_val
+        status_str = res.info.status
+
+        ok = (status_val in (
+                osqp.constant('OSQP_SOLVED'),
+                osqp.constant('OSQP_SOLVED_INACCURATE'))
+            ) and (res.x is not None)
+
         if ok:
             print("QP solved")
+
         if not ok:
-            print("QP failed; status =")   
+            print("\n=== QP FAILURE ===")
+            print(f"  status: {status_str} (code {status_val})")
+            print(f"  obj_val: {res.info.obj_val}")
+            print(f"  prim_res: {res.info.prim_res}")
+            print(f"  dual_res: {res.info.dual_res}")
+            print(f"  iter: {res.info.iter}")
+            self.debug_qp_failure(H, q, l, u, w_des, dt)
+            print("=== END QP FAILURE ===\n")
+               
             # fallback: your previous least-squares + staged desaturation
             u0  = self.u0_mix.copy()
             rhs = w_des - self.B @ u0
