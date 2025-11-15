@@ -139,7 +139,7 @@ class PIDcontrol(Node):
         self.T_max  = (self.m*G)/self.u_hover
         # Slew limit helper
         self.u_prev = np.zeros(4)
-        self.slew_per_s = 40.0  # max Δu per second (tune)
+        self.slew_per_s = 800.0  # 40 max Δu per second (tune)
 
         print("cond(B)=", np.linalg.cond(self.B))       # deve essere basso (poche decine)
         u0  = np.full(4, self.u_hover)
@@ -172,7 +172,7 @@ class PIDcontrol(Node):
         self.rhov = 2e-3    # toward previous u for smoothness
 
         # axis weights: roll=pitch >> yaw
-        wx, wy, wz, wf = 1.0, 1.0, 0.12, 0.6
+        wx, wy, wz, wf = 1.0, 1.0, 0.05, 0.6  #yaw was 0.12 [2] terzo
 
         # normalization + priorities
         self.S = np.diag([1.0/self.Mx_max,
@@ -219,13 +219,13 @@ class PIDcontrol(Node):
 
         # bounds etc.
         self.u_min = np.zeros(self.motors)
-        self.u_max = np.ones(self.motors)
+        self.u_max = np.ones(self.motors)*1.5
         self.u0_mix = np.full(self.motors, self.u_hover)
         self.u_prev = np.zeros(self.motors)
         self.y_prev_qp = np.zeros(4*self.motors)
 
         # directionality settings
-        self.lambda_dir_default = 200.0
+        self.lambda_dir_default = 50#200.0
         self.eps_dir = 1e-5
 
 
@@ -285,10 +285,10 @@ class PIDcontrol(Node):
                 # ---- Trajectory generator (figure-8) ----
         self.mode = 'fig8'            # 'waypoints' or 'fig8'
         self.center = np.array([1.0, 1.0, -5.0], dtype=float)  # [x0, y0, z0] (z<0 in NED)
-        self.Ax = 60.0#40.0                # half-width in X (meters)
-        self.Ay = 60.0#40.0                # half-height in Y (meters)
+        self.Ax = 60.0#60.0 to get more on the saturation          40 normally     # half-width in X (meters)
+        self.Ay = 60.0#60.0                # half-height in Y (meters)
 
-        self.period = 25.0    #40        # seconds (ω = 2π/period). Increase if accel is too high.
+        self.period = 25.0 #25.0 to get more on saturation limit   #40        # seconds (ω = 2π/period). Increase if accel is too high.
         self.w_traj = 2.0*math.pi / self.period
         self.phase = 0.0              # phase for Y in the Lissajous form
         self.follow_tangent_yaw = True   # True → yaw points along motion, False → yaw=0
@@ -724,7 +724,7 @@ class PIDcontrol(Node):
 
         ok = (res.info.status_val == osqp.constant('OSQP_SOLVED')) and (res.x is not None)
         if ok:
-            print("QP solved in")
+            print("QP solved")
         if not ok:
             print("QP failed; status =")   
             # fallback: your previous least-squares + staged desaturation
