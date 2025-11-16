@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
 
+
+
+
+
+# 2 LOOP PID CASCADE CONTROLLER FOR A DRONE WITH SAME PUBLISH TIME
+
+
+
+
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
@@ -20,7 +29,7 @@ MIN_THRUST = 0.05                 # normalized thrust limits for PX4
 MAX_THRUST = 1.0
 HOVER_THRUST = 0.725   # da tarare; 0.5–0.6 in SITL è tipico
 I_MAX = 3.0   
-A_XY_MAX   = 4.0   # m/s^2 limit for horizontal accel command
+A_XY_MAX   = 50.0 #4  # m/s^2 limit for horizontal accel command
 I_XY_MAX   = 2.0   # cap on XY integrators
 I_LEAK_TAU = 5.0   # s, for gentle integral leakage
 
@@ -60,7 +69,7 @@ class PIDcontrol(Node):
             depth=1
         )
         # Outer loop gains
-        self.Kpz = 0.65#1.6
+        self.Kpz = 0.95#1.6
         self.Kiz = 0.02
         self.Kdz = 0.7#0.5
         
@@ -128,6 +137,8 @@ class PIDcontrol(Node):
             -np.ones(4) * self.kf     # Fz (FRD: up-thrust is negative)
         ]).astype(float)
 
+        self.Brp = self.B[0:2, :]
+
         l = np.sqrt((self.propx**2 + self.propy**2).mean())         # approx arm (m)
         kappa = 0.4
         self.Mx_max = self.My_max = (l/np.sqrt(2)) * (self.m*G) * kappa
@@ -151,6 +162,9 @@ class PIDcontrol(Node):
 
 
         # DEBUG PUBLISHER
+
+        # DEBUG PUBLISHER
+        self.dircos_pub   = self.create_publisher(Float32, '/debug/dir_cos', 10)
 
         # position / reference
         self.ref_pub      = self.create_publisher(Point, '/debug/ref_xyz', 10)
@@ -199,10 +213,10 @@ class PIDcontrol(Node):
                 # ---- Trajectory generator (figure-8) ----
         self.mode = 'fig8'            # 'waypoints' or 'fig8'
         self.center = np.array([1.0, 1.0, -5.0], dtype=float)  # [x0, y0, z0] (z<0 in NED)
-        self.Ax = 40.0                # half-width in X (meters)
-        self.Ay = 40.0                # half-height in Y (meters)
+        self.Ax = 60.0                # half-width in X (meters)
+        self.Ay = 60.0                # half-height in Y (meters)
 
-        self.period = 40.0            # seconds (ω = 2π/period). Increase if accel is too high.
+        self.period = 25.0            # seconds (ω = 2π/period). Increase if accel is too high.
         self.w_traj = 2.0*math.pi / self.period
         self.phase = 0.0              # phase for Y in the Lissajous form
         self.follow_tangent_yaw = True   # True → yaw points along motion, False → yaw=0
@@ -578,7 +592,23 @@ class PIDcontrol(Node):
         self.prop4_debug_pub.publish(Float32(data=float(u_mot[3])))
 
         # Debug actual thrust sent
-        
+    
+    def publish_dir_cos(self, w_des, u_cmd):
+        # desired roll–pitch torque from command
+        t_des = w_des[0:2]              # [Mx_des, My_des]
+
+        # allocated roll–pitch torque from actual motors
+        t_alloc = self.Brp @ u_cmd      # 2x4 * 4 = R^2
+
+        nd = np.linalg.norm(t_des)
+        na = np.linalg.norm(t_alloc)
+
+        cos_dir = 0.0
+        if nd > 1e-4 and na > 1e-4:
+            cos_dir = float(np.dot(t_des, t_alloc) / (nd * na))
+
+        self.dircos_pub.publish(Float32(data=cos_dir))
+
         # NEW
     def mix_to_motors(self, tau, u_thrust, dt):
         """
@@ -620,6 +650,7 @@ class PIDcontrol(Node):
         sat = (u.min() <= 1e-6) or (u.max() >= 1.0-1e-6)
         w_alloc = self.B @ u
         residual = w_des - w_alloc
+        self.publish_dir_cos(w_des, u)
         return u, sat, w_des , w_alloc, residual
 
 

@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
 
+
+
+
+
+# 2 LOOP PID CASCADE CONTROLLER FOR A DRONE WITH DIFFERENT PUBLISH TIME
+
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
@@ -127,6 +133,8 @@ class PIDcontrol(Node):
             self.s  * (self.km*self.kf),   # Mz
             -np.ones(4) * self.kf     # Fz (FRD: up-thrust is negative)
         ]).astype(float)
+
+        self.Brp = self.B[0:2, :]
 
         l = np.sqrt((self.propx**2 + self.propy**2).mean())         # approx arm (m)
         kappa = 0.4
@@ -571,6 +579,22 @@ class PIDcontrol(Node):
         self.prop4_debug_pub.publish(Float32(data=float(u_mot[3])))
 
         # Debug actual thrust sent
+
+    def publish_dir_cos(self, w_des, u_cmd):
+        # desired roll–pitch torque from command
+        t_des = w_des[0:2]              # [Mx_des, My_des]
+
+        # allocated roll–pitch torque from actual motors
+        t_alloc = self.Brp @ u_cmd      # 2x4 * 4 = R^2
+
+        nd = np.linalg.norm(t_des)
+        na = np.linalg.norm(t_alloc)
+
+        cos_dir = 0.0
+        if nd > 1e-4 and na > 1e-4:
+            cos_dir = float(np.dot(t_des, t_alloc) / (nd * na))
+
+        self.dircos_pub.publish(Float32(data=cos_dir))
         
         # NEW
     def mix_to_motors(self, tau, u_thrust, dt):
@@ -609,7 +633,7 @@ class PIDcontrol(Node):
         du_max = self.slew_per_s * dt
         u = np.clip(self.u_prev + np.clip(u - self.u_prev, -du_max, du_max), 0.0, 1.0)
         self.u_prev = u
-
+        self.publish_dir_cos(w_des, u)
         sat = (u.min() <= 1e-6) or (u.max() >= 1.0-1e-6)
         w_alloc = self.B @ u
         residual = w_des - w_alloc
