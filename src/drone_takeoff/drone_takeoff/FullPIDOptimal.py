@@ -283,23 +283,31 @@ class PIDcontrol(Node):
 
 
                 # ---- Trajectory generator (figure-8) ----
-        self.mode = 'fig8'            # 'waypoints' or 'fig8'
-        self.center = np.array([1.0, 1.0, -5.0], dtype=float)  # [x0, y0, z0] (z<0 in NED)
-        self.Ax = 60.0#60.0 to get more on the saturation          40 normally     # half-width in X (meters)
-        self.Ay = 60.0#60.0                # half-height in Y (meters)
+                # ---- Trajectory logic ----
+        # start by going to (0,0,-5) as a waypoint, then switch to figure-8
+        self.mode = 'waypoints'            # 'waypoints' or 'fig8'
 
-        self.period = 25.0 #25.0 to get more on saturation limit   #40        # seconds (ω = 2π/period). Increase if accel is too high.
+        # single pre-trajectory waypoint: hover at (0,0,-5)
+        self.reftraj = [
+            [0.0, 0.0, -5.0],
+        ]
+        self.refcount = 0
+        self.refpoint = list(self.reftraj[0])
+
+        # figure-8 parameters (used when self.mode == 'fig8')
+        self.center = np.array([0.0, 0.0, -5.0], dtype=float)  # center of the 8
+        self.Ax = 40.0          # half-width in X (meters)
+        self.Ay = 40.0          # half-height in Y (meters)
+
+        self.period = 40.0      # seconds (ω = 2π/period)
         self.w_traj = 2.0*math.pi / self.period
-        self.phase = 0.0              # phase for Y in the Lissajous form
+        self.phase = 0.0
         self.follow_tangent_yaw = True   # True → yaw points along motion, False → yaw=0
-        self.lock_center_on_first_pose = True  # center on first pose automatically
+        self.lock_center_on_first_pose = True
         self.have_center = False
 
         self.t0 = time.time()
 
-        self.refpoint = [float(self.center[0]), float(self.center[1]), float(self.center[2])]
-       
-        self.refcount = 0
 
        
            
@@ -512,6 +520,7 @@ class PIDcontrol(Node):
 
 
         # Only run the "advance to next waypoint" logic in waypoint mode
+        # Only run the "advance to next waypoint" logic in waypoint mode
         if self.mode == 'waypoints':
             # current yaw
             _, _, yaw = quat_to_euler_zyx(self.q)
@@ -526,14 +535,34 @@ class PIDcontrol(Node):
             if pos_ok and yaw_ok:
                 if not hasattr(self, "inside_since"):
                     self.inside_since = time.time()
-                elif time.time() - self.inside_since > 1.0:
+                elif time.time() - self.inside_since > 5.0:
+                    # reached current waypoint and stayed for 1 s
                     self.refcount += 1
-                if self.refcount < len(self.reftraj):
-                    self.refpoint = self.reftraj[self.refcount]
-                    print("POSIZIONE RAGGIUNTA (yaw ok)")
+                    del self.inside_since
+
+                    if self.refcount < len(self.reftraj):
+                        # move to next waypoint (if you add more later)
+                        self.refpoint = self.reftraj[self.refcount]
+                        print("POSIZIONE RAGGIUNTA (yaw ok)")
+                    else:
+                        # all waypoints done → switch to figure-8
+                        print("All waypoints reached, switching to figure-8")
+                        self.mode = 'fig8'
+
+                        # fix the center of the 8 at the last waypoint (0,0,-5)
+                        self.center[0] = self.refpoint[0]
+                        self.center[1] = self.refpoint[1]
+                        self.center[2] = self.refpoint[2]
+
+                        # prevent update_reference from recentering on first pose
+                        self.have_center = True
+                        # restart figure-8 time
+                        self.t0 = time.time()
+                        self.t_last = time.time()
             else:
                 if hasattr(self, "inside_since"):
                     del self.inside_since
+
 
             
 
@@ -642,6 +671,7 @@ class PIDcontrol(Node):
         # vertical command → collective thrust
         az_cmd = self.azPD + self.Kiz * self.I[2]
         u_unsat = HOVER_THRUST * (1.0 - az_cmd / G)
+        #u_unsat= HOVER_THRUST * (math.sqrt(self.axPIDclam**2 + self.ayPIDclam**2 + (G - az_cmd)**2) / G)
         u = clamp(u_unsat, MIN_THRUST, MAX_THRUST)
 
         # anti-windup on Z

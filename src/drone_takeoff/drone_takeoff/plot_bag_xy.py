@@ -252,18 +252,39 @@ def main():
 
     # 3D trajectory
     if HAS_3D:
+        # PX4 uses z down; convert to z up for plotting
+        zr_plot = -zr
+        za_plot = -za
+
         fig = plt.figure()
         ax = fig.add_subplot(111, projection="3d")
-        ax.plot(xr, yr, zr, "--", label="reference")
-        ax.plot(xa, ya, za, "-",  label="actual")
-        ax.set_xlabel("X"); ax.set_ylabel("Y"); ax.set_zlabel("Z")
-        ax.set_title("3D trajectory: reference vs actual")
-        set_equal_3d(ax, np.r_[xr,xa], np.r_[yr,ya], np.r_[zr,za])
+
+        ax.plot(xr, yr, zr_plot, "--", label="reference")
+        ax.plot(xa, ya, za_plot, "-",  label="actual")
+
+        ax.set_xlabel("X [m]")
+        ax.set_ylabel("Y [m]")
+        ax.set_zlabel("Z [m, up]")
+        ax.set_title("3D trajectory: reference vs actual (PX4 z inverted)")
+
+        # equal aspect first (this is what was overriding your z limits)
+        set_equal_3d(
+            ax,
+            np.r_[xr, xa],
+            np.r_[yr, ya],
+            np.r_[zr_plot, za_plot],
+        )
+
+        # now force the vertical range: real-world z in [-1, 8] m
+        ax.set_zlim(-1.0, 8.0)
+
         ax.legend()
         if args.save3d:
-            plt.savefig(args.save3d, dpi=180); print("Saved 3D:", args.save3d)
+            plt.savefig(args.save3d, dpi=180)
+            print("Saved 3D:", args.save3d)
     else:
         print("3D backend not available; skipping 3D plot.")
+
 
     # --- RPY with RMS ---
     try:

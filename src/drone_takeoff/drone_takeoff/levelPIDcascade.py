@@ -143,7 +143,7 @@ class PIDcontrol(Node):
         self.T_max  = (self.m*G)/self.u_hover
         # Slew limit helper
         self.u_prev = np.zeros(4)
-        self.slew_per_s = 40.0  # max Δu per second (tune)
+        self.slew_per_s = 80.0  # max Δu per second (tune)
 
         print("cond(B)=", np.linalg.cond(self.B))       # deve essere basso (poche decine)
         u0  = np.full(4, self.u_hover)
