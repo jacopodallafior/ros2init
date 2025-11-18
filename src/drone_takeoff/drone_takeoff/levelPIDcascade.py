@@ -215,23 +215,31 @@ class PIDcontrol(Node):
 
 
                 # ---- Trajectory generator (figure-8) ----
-        self.mode = 'fig8'            # 'waypoints' or 'fig8'
-        self.center = np.array([1.0, 1.0, -5.0], dtype=float)  # [x0, y0, z0] (z<0 in NED)
-        self.Ax = 60.0   #40             # half-width in X (meters)
-        self.Ay = 60.0   #40             # half-height in Y (meters)
+        # ---- Trajectory logic ----
+        # start by going to (0,0,-5) as a waypoint, then switch to figure-8
+        self.mode = 'waypoints'            # 'waypoints' or 'fig8'
 
-        self.period = 25.0            # seconds (ω = 2π/period). Increase if accel is too high.
+        # single pre-trajectory waypoint: hover at (0,0,-5)
+        self.reftraj = [
+            [0.0, 0.0, -20.0],
+        ]
+        self.refcount = 0
+        self.refpoint = list(self.reftraj[0])
+
+        # figure-8 parameters (used when self.mode == 'fig8')
+        self.center = np.array([0.0, 0.0, -20.0], dtype=float)  # center of the 8
+        self.Ax = 40.0          # half-width in X (meters)
+        self.Ay = 40.0          # half-height in Y (meters)
+
+        self.period = 10.5      # seconds (ω = 2π/period)
         self.w_traj = 2.0*math.pi / self.period
-        self.phase = 0.0              # phase for Y in the Lissajous form
+        self.phase = 0.0
         self.follow_tangent_yaw = True   # True → yaw points along motion, False → yaw=0
-        self.lock_center_on_first_pose = True  # center on first pose automatically
+        self.lock_center_on_first_pose = True
         self.have_center = False
 
         self.t0 = time.time()
 
-        self.refpoint = [float(self.center[0]), float(self.center[1]), float(self.center[2])]
-       
-        self.refcount = 0
 
        
            
@@ -266,7 +274,7 @@ class PIDcontrol(Node):
 
         # ---- candidate time along the trajectory ----
         t_cand = now - self.t0
-
+        '''
         # ---- Candidate position at t_cand ----
         x_cand = self.center[0] + self.Ax * math.sin(self.w_traj * t_cand)
         y_cand = self.center[1] + self.Ay * math.sin(2.0 * self.w_traj * t_cand + self.phase)
@@ -288,7 +296,37 @@ class PIDcontrol(Node):
             yaw_cand = math.atan2(vy, vx)
         else:
             yaw_cand = 0.0
+        '''
+         # ---- Candidate position at t_cand: CIRCLE ----
+        theta = self.w_traj * t_cand
 
+        x_cand = self.center[0] + self.Ax * math.cos(theta)
+        y_cand = self.center[1] + self.Ay * math.sin(theta)
+        z_cand = self.center[2]
+
+        # REFERENCES FOR THE CIRCLE TRAJECTORY
+        vx_ref = -self.Ax * self.w_traj * math.sin(theta)
+        vy_ref =  self.Ay * self.w_traj * math.cos(theta)
+
+        ax_ref = -self.Ax * (self.w_traj**2) * math.cos(theta)
+        ay_ref = -self.Ay * (self.w_traj**2) * math.sin(theta)
+
+
+
+        
+        self.vx_ref, self.vy_ref = vx_ref, vy_ref
+        self.ax_ref, self.ay_ref = ax_ref, ay_ref
+
+        # ---- Candidate yaw at t_cand ----
+        if self.follow_tangent_yaw:
+           # vx = self.Ax * self.w_traj * math.cos(self.w_traj * t_cand)
+           # vy = 2.0 * self.Ay * self.w_traj * math.cos(2.0 * self.w_traj * t_cand + self.phase)
+            vx = -self.Ax * self.w_traj * math.sin(theta)
+            vy =  self.Ay * self.w_traj * math.cos(theta)
+
+            yaw_cand = math.atan2(vy, vx)
+        else:
+            yaw_cand = 0.0
         # ---- Check yaw gate vs actual yaw ----
         _, _, yaw_act = quat_to_euler_zyx(self.q)
         yaw_err = abs(wrap_pi(yaw_cand - yaw_act))
@@ -351,6 +389,7 @@ class PIDcontrol(Node):
 
 
         # Only run the "advance to next waypoint" logic in waypoint mode
+                # Only run the "advance to next waypoint" logic in waypoint mode
         if self.mode == 'waypoints':
             # current yaw
             _, _, yaw = quat_to_euler_zyx(self.q)
@@ -366,13 +405,33 @@ class PIDcontrol(Node):
                 if not hasattr(self, "inside_since"):
                     self.inside_since = time.time()
                 elif time.time() - self.inside_since > 1.0:
+                    # reached current waypoint and stayed for 1 s
                     self.refcount += 1
-                if self.refcount < len(self.reftraj):
-                    self.refpoint = self.reftraj[self.refcount]
-                    print("POSIZIONE RAGGIUNTA (yaw ok)")
+                    del self.inside_since
+
+                    if self.refcount < len(self.reftraj):
+                        # move to next waypoint (if you add more later)
+                        self.refpoint = self.reftraj[self.refcount]
+                        print("POSIZIONE RAGGIUNTA (yaw ok)")
+                    else:
+                        # all waypoints done → switch to figure-8
+                        print("All waypoints reached, switching to figure-8")
+                        self.mode = 'fig8'
+
+                        # fix the center of the 8 at the last waypoint (0,0,-5)
+                        self.center[0] = self.refpoint[0]
+                        self.center[1] = self.refpoint[1]
+                        self.center[2] = self.refpoint[2]
+
+                        # prevent update_reference from recentering on first pose
+                        self.have_center = True
+                        # restart figure-8 time
+                        self.t0 = time.time()
+                        self.t_last = time.time()
             else:
                 if hasattr(self, "inside_since"):
                     del self.inside_since
+
 
             
 
@@ -625,7 +684,7 @@ class PIDcontrol(Node):
             u = np.clip(u0+ np.linalg.lstsq(self.B, rhs, rcond=None)[0], 0.0, 1.0)
             if (u.min() <= 1e-6) or (u.max() >= 1.0-1e-6):
                 w3 = w2.copy()
-                w3[3] = 0.7*w2[3] + 0.3*(-self.m*G)  # pull Fz toward hover
+                w3[3] = 0.9*w2[3] + 0.3*(-self.m*G)  # pull Fz toward hover  #0.7 
                 rhs = w3 - self.B @ u0 # reccompute the 
                 u = np.clip(u0+ np.linalg.lstsq(self.B, rhs, rcond=None)[0], 0.0, 1.0)
 

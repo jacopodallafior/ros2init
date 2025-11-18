@@ -169,10 +169,10 @@ class PIDcontrol(Node):
         # === QP allocator setup (upper-triangular P for OSQP) ===
         # regularization weights
         self.rho0 = 1e-4    # toward hover mix u0
-        self.rhov = 2e-3    # toward previous u for smoothness
+        self.rhov = 2e-3    # toward previous u for smoothness # 2e-1 similar to LS
 
         # axis weights: roll=pitch >> yaw
-        wx, wy, wz, wf = 1.0, 1.0, 0.05, 0.6  #yaw was 0.12 [2] terzo
+        wx, wy, wz, wf = 1.0, 1.0, 0.5, 0.6  #yaw was 0.12 [2] terzo
 
         # normalization + priorities
         self.S = np.diag([1.0/self.Mx_max,
@@ -289,17 +289,17 @@ class PIDcontrol(Node):
 
         # single pre-trajectory waypoint: hover at (0,0,-5)
         self.reftraj = [
-            [0.0, 0.0, -5.0],
+            [0.0, 0.0, -15.0],
         ]
         self.refcount = 0
         self.refpoint = list(self.reftraj[0])
 
         # figure-8 parameters (used when self.mode == 'fig8')
-        self.center = np.array([0.0, 0.0, -5.0], dtype=float)  # center of the 8
+        self.center = np.array([0.0, 0.0, -15.0], dtype=float)  # center of the 8
         self.Ax = 40.0          # half-width in X (meters)
         self.Ay = 40.0          # half-height in Y (meters)
 
-        self.period = 40.0      # seconds (ω = 2π/period)
+        self.period = 11.0      # seconds (ω = 2π/period) 40 
         self.w_traj = 2.0*math.pi / self.period
         self.phase = 0.0
         self.follow_tangent_yaw = True   # True → yaw points along motion, False → yaw=0
@@ -435,10 +435,10 @@ class PIDcontrol(Node):
 
         # ---- candidate time along the trajectory ----
         t_cand = now - self.t0
-
+        '''
         # ---- Candidate position at t_cand ----
         x_cand = self.center[0] + self.Ax * math.sin(self.w_traj * t_cand)
-        y_cand = self.center[1] + self.Ay * math.sin(2.0 * self.w_traj * t_cand + self.phase)
+        y_cand = self.center[1] + self.Ay * math.sin(2*self.w_traj * t_cand + self.phase) #2*
         z_cand = self.center[2]
 
         # REFERENCES FOR THE EIGTH TRAJECTORIES
@@ -446,14 +446,34 @@ class PIDcontrol(Node):
         vy_ref = 2.0 * self.Ay * self.w_traj * math.cos(2.0 * self.w_traj * t_cand + self.phase)
         ax_ref = -self.Ax * (self.w_traj**2) * math.sin(self.w_traj * t_cand)
         ay_ref = -(2.0*self.w_traj)**2 * self.Ay * math.sin(2.0 * self.w_traj * t_cand + self.phase)
+        '''
+        # ---- Candidate position at t_cand: CIRCLE ----
+        theta = self.w_traj * t_cand
 
+        x_cand = self.center[0] + self.Ax * math.cos(theta)
+        y_cand = self.center[1] + self.Ay * math.sin(theta)
+        z_cand = self.center[2]
+
+        # REFERENCES FOR THE CIRCLE TRAJECTORY
+        vx_ref = -self.Ax * self.w_traj * math.sin(theta)
+        vy_ref =  self.Ay * self.w_traj * math.cos(theta)
+
+        ax_ref = -self.Ax * (self.w_traj**2) * math.cos(theta)
+        ay_ref = -self.Ay * (self.w_traj**2) * math.sin(theta)
+
+
+
+        
         self.vx_ref, self.vy_ref = vx_ref, vy_ref
         self.ax_ref, self.ay_ref = ax_ref, ay_ref
 
         # ---- Candidate yaw at t_cand ----
         if self.follow_tangent_yaw:
-            vx = self.Ax * self.w_traj * math.cos(self.w_traj * t_cand)
-            vy = 2.0 * self.Ay * self.w_traj * math.cos(2.0 * self.w_traj * t_cand + self.phase)
+           # vx = self.Ax * self.w_traj * math.cos(self.w_traj * t_cand)
+           # vy = 2.0 * self.Ay * self.w_traj * math.cos(2.0 * self.w_traj * t_cand + self.phase)
+            vx = -self.Ax * self.w_traj * math.sin(theta)
+            vy =  self.Ay * self.w_traj * math.cos(theta)
+
             yaw_cand = math.atan2(vy, vx)
         else:
             yaw_cand = 0.0
@@ -535,7 +555,7 @@ class PIDcontrol(Node):
             if pos_ok and yaw_ok:
                 if not hasattr(self, "inside_since"):
                     self.inside_since = time.time()
-                elif time.time() - self.inside_since > 5.0:
+                elif time.time() - self.inside_since > 2.0:
                     # reached current waypoint and stayed for 1 s
                     self.refcount += 1
                     del self.inside_since
