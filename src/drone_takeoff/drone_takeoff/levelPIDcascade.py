@@ -221,17 +221,17 @@ class PIDcontrol(Node):
 
         # single pre-trajectory waypoint: hover at (0,0,-5)
         self.reftraj = [
-            [0.0, 0.0, -20.0],
+            [0.0, 0.0, -15.0],
         ]
         self.refcount = 0
         self.refpoint = list(self.reftraj[0])
 
         # figure-8 parameters (used when self.mode == 'fig8')
-        self.center = np.array([0.0, 0.0, -20.0], dtype=float)  # center of the 8
+        self.center = np.array([0.0, 0.0, -15.0], dtype=float)  # center of the 8
         self.Ax = 40.0          # half-width in X (meters)
         self.Ay = 40.0          # half-height in Y (meters)
 
-        self.period = 10.5      # seconds (ω = 2π/period)
+        self.period = 11   #40   # seconds (ω = 2π/period)
         self.w_traj = 2.0*math.pi / self.period
         self.phase = 0.0
         self.follow_tangent_yaw = True   # True → yaw points along motion, False → yaw=0
@@ -676,7 +676,7 @@ class PIDcontrol(Node):
         rhs = w_des - self.B @ u0
         du  = np.linalg.lstsq(self.B, rhs, rcond=None)[0]
         u   = np.clip(u0 + du, 0.0, 1.0)
-        
+        '''
         # Simple desaturation: drop yaw first, then relax thrust toward hover
         if (u.min() <= 1e-6) or (u.max() >= 1.0-1e-6):
             w2 = w_des.copy(); w2[2] *= 0.5  # halve Mz
@@ -687,7 +687,7 @@ class PIDcontrol(Node):
                 w3[3] = 0.9*w2[3] + 0.3*(-self.m*G)  # pull Fz toward hover  #0.7 
                 rhs = w3 - self.B @ u0 # reccompute the 
                 u = np.clip(u0+ np.linalg.lstsq(self.B, rhs, rcond=None)[0], 0.0, 1.0)
-
+        '''
         # Slew limit
         du_max = self.slew_per_s * dt
         u = np.clip(self.u_prev + np.clip(u - self.u_prev, -du_max, du_max), 0.0, 1.0)

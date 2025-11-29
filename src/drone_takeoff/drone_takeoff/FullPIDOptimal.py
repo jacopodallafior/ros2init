@@ -68,11 +68,11 @@ class PIDcontrol(Node):
         self.Kiz = 0.02
         self.Kdz = 0.7#0.5
         
-        self.Kpx = 0.5
-        self.Kdx = 0.8
+        self.Kpx = 0.50
+        self.Kdx = 0.80
         self.Kix = 0.01
-        self.Kpy = 0.5
-        self.Kdy = 0.8
+        self.Kpy = 0.50
+        self.Kdy = 0.80
         self.Kiy = 0.01
 
         # State variables
@@ -290,7 +290,18 @@ class PIDcontrol(Node):
         # single pre-trajectory waypoint: hover at (0,0,-5)
         self.reftraj = [
             [0.0, 0.0, -15.0],
+            #[20.0, 0.0, -5.0],
+            #[20.0, 30.0, -5.0],
+            #[10.0, 30.0, -5.0],
+            #[10.0, 15.0, -5.0],
+            #[0.0, 0.0, -5.0],
+            
         ]
+
+      #  [10.0, 0.0, -15.0],
+         #   [10.0, 10.0, -15.0],
+           # [20.0, 10.0, -15.0],
+          #  [0.0, 0.0, -15.0],
         self.refcount = 0
         self.refpoint = list(self.reftraj[0])
 
@@ -299,7 +310,7 @@ class PIDcontrol(Node):
         self.Ax = 40.0          # half-width in X (meters)
         self.Ay = 40.0          # half-height in Y (meters)
 
-        self.period = 11.0      # seconds (ω = 2π/period) 40 
+        self.period = 11#40.0      # seconds (ω = 2π/period) 40 #circle 11
         self.w_traj = 2.0*math.pi / self.period
         self.phase = 0.0
         self.follow_tangent_yaw = True   # True → yaw points along motion, False → yaw=0
@@ -446,8 +457,11 @@ class PIDcontrol(Node):
         vy_ref = 2.0 * self.Ay * self.w_traj * math.cos(2.0 * self.w_traj * t_cand + self.phase)
         ax_ref = -self.Ax * (self.w_traj**2) * math.sin(self.w_traj * t_cand)
         ay_ref = -(2.0*self.w_traj)**2 * self.Ay * math.sin(2.0 * self.w_traj * t_cand + self.phase)
-        '''
+        
+
+        #CIRCLE TRAJECTORY
         # ---- Candidate position at t_cand: CIRCLE ----
+        '''
         theta = self.w_traj * t_cand
 
         x_cand = self.center[0] + self.Ax * math.cos(theta)
@@ -460,9 +474,74 @@ class PIDcontrol(Node):
 
         ax_ref = -self.Ax * (self.w_traj**2) * math.cos(theta)
         ay_ref = -self.Ay * (self.w_traj**2) * math.sin(theta)
+        '''
+        #TRIFOGLIO TRAJECTORY
+        # ---- Candidate position at t_cand: TRIFOGLIO ----
+        theta = self.w_traj * t_cand
+
+        # 3-leaf clover radius in polar form
+        r_trif = self.Ax * math.sin(3.0 * theta)
+
+        # Position
+        x_cand = self.center[0] + r_trif * math.cos(theta)
+        y_cand = self.center[1] + r_trif * math.sin(theta)
+        z_cand = self.center[2]
+
+        # Precompute 2θ and 4θ terms for derivatives
+        theta2 = 2.0 * self.w_traj * t_cand
+        theta4 = 4.0 * self.w_traj * t_cand
+        w = self.w_traj
+
+        # REFERENCES FOR THE TRIFOGLIO TRAJECTORY
+        # First derivatives (velocity)
+        vx_ref = self.Ax * w * (math.cos(theta2) + 2.0 * math.cos(theta4))
+        vy_ref = self.Ax * w * (-math.sin(theta2) + 2.0 * math.sin(theta4))
+
+        # Second derivatives (acceleration)
+        ax_ref = -2.0 * self.Ax * (w**2) * (math.sin(theta2) + 4.0 * math.sin(theta4))
+        ay_ref =  2.0 * self.Ax * (w**2) * (-math.cos(theta2) + 4.0 * math.cos(theta4))
+
+        
+        # ---- Motore generico in coordinate polari ----
+
+        # QUI DEFINISCI r, dr, d2r IN FUNZIONE DI theta (vedi figure sotto)
+        A  = self.Ax          # raggio medio
+        eps = 0.4             # "dentatura" della stella
+        k  = 5.0              # 5 punte
+
+        r   = A * (1.0 + eps * math.cos(k * theta))
+        dr  = A * eps * (-k * math.sin(k * theta)) * omega
+        d2r = A * eps * (-k**2 * math.cos(k * theta)) * (omega**2)
+
+        
+        theta = self.w_traj * t_cand
+        omega = self.w_traj
+
+        A = self.Ax       # ampiezza principale
+        B = 0.3 * self.Ax # petali secondari
+        k = 3.0
+
+        r   = A * math.sin(k * theta) + B * math.sin(2.0 * k * theta)
+        dr  = (A * k * math.cos(k * theta) +
+            2.0 * B * k * math.cos(2.0 * k * theta)) * omega
+        d2r = (-A * (k**2) * math.sin(k * theta) -
+            4.0 * B * (k**2) * math.sin(2.0 * k * theta)) * (omega**2)
 
 
+        # Posizione
+        x_cand = self.center[0] + r * math.cos(theta)
+        y_cand = self.center[1] + r * math.sin(theta)
+        z_cand = self.center[2]
 
+        # Velocità
+        vx_ref = dr * math.cos(theta) - r * math.sin(theta) * omega
+        vy_ref = dr * math.sin(theta) + r * math.cos(theta) * omega
+
+        # Accelerazione
+        ax_ref = d2r * math.cos(theta) - 2.0 * dr * math.sin(theta) * omega - r * math.cos(theta) * (omega**2)
+        ay_ref = d2r * math.sin(theta) + 2.0 * dr * math.cos(theta) * omega - r * math.sin(theta) * (omega**2)
+
+        '''
         
         self.vx_ref, self.vy_ref = vx_ref, vy_ref
         self.ax_ref, self.ay_ref = ax_ref, ay_ref
@@ -470,9 +549,16 @@ class PIDcontrol(Node):
         # ---- Candidate yaw at t_cand ----
         if self.follow_tangent_yaw:
            # vx = self.Ax * self.w_traj * math.cos(self.w_traj * t_cand)
-           # vy = 2.0 * self.Ay * self.w_traj * math.cos(2.0 * self.w_traj * t_cand + self.phase)
+            #vy = 2.0 * self.Ay * self.w_traj * math.cos(2.0 * self.w_traj * t_cand + self.phase)
+           #circle
             vx = -self.Ax * self.w_traj * math.sin(theta)
             vy =  self.Ay * self.w_traj * math.cos(theta)
+           #trifoglio
+            #vx = self.Ax * w * (math.cos(theta2) + 2.0 * math.cos(theta4))
+            #vy = self.Ax * w * (-math.sin(theta2) + 2.0 * math.sin(theta4))
+           # vx = dr * math.cos(theta) - r * math.sin(theta) * omega
+            #vy = dr * math.sin(theta) + r * math.cos(theta) * omega
+
 
             yaw_cand = math.atan2(vy, vx)
         else:
@@ -555,7 +641,7 @@ class PIDcontrol(Node):
             if pos_ok and yaw_ok:
                 if not hasattr(self, "inside_since"):
                     self.inside_since = time.time()
-                elif time.time() - self.inside_since > 2.0:
+                elif time.time() - self.inside_since > 3.0:
                     # reached current waypoint and stayed for 1 s
                     self.refcount += 1
                     del self.inside_since
@@ -719,6 +805,12 @@ class PIDcontrol(Node):
 
         # accel + yaw → desired roll,pitch and store for inner loop
         roll_d, pitch_d, _ = self.accel_yaw_to_rpy(self.axPIDclam, self.ayPIDclam, az_cmd, self.yaw_d)
+        # Linearized pitch
+       # pitch_d = (-self.axPIDclam * math.cos(self.yaw_d) - self.ayPIDclam * math.sin(self.yaw_d)) / G
+
+        # Linearized roll
+        #roll_d = ( self.ayPIDclam * math.cos(self.yaw_d) - self.axPIDclam * math.sin(self.yaw_d)) / G
+
         self.roll_d = roll_d
         self.pitch_d = pitch_d
         self.u_thrust_cmd = u  # collective used by inner loop
@@ -742,6 +834,9 @@ class PIDcontrol(Node):
         self.p_lpf = alpha*self.p_lpf + (1-alpha)*self.omega[0]
         self.q_lpf = alpha*self.q_lpf + (1-alpha)*self.omega[1]
         self.r_lpf = alpha*self.r_lpf + (1-alpha)*self.omega[2]
+        #self.p_lpf =self.omega[0]
+        #self.q_lpf = self.omega[1]
+        #self.r_lpf = self.omega[2]
 
         # attitude PID (+I) with body-rate damping
         tau = self.controller_PID_attitude(self.roll_d, self.pitch_d, self.yaw_d, dt)

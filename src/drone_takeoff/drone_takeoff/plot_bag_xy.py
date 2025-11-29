@@ -314,26 +314,74 @@ def main():
         print("Saved:", args.save)
 
     # --- RMS XY (plain + lag-corrected), after skip ---
+        # --- RMS position + error plots (XY + Z), after skip ---
     out = resample(t_r, xr, t_a, xa, skip_sec=args.skip_sec)
     if out is not None:
         tt, xr_i, xa_i = out
         _, yr_i, ya_i = resample(t_r, yr, t_a, ya, skip_sec=args.skip_sec)
+        _, zr_i, za_i = resample(t_r, zr, t_a, za, skip_sec=args.skip_sec)
+
+        # errori posizione
         ex = xa_i - xr_i
         ey = ya_i - yr_i
-        rms_xy = np.sqrt(np.mean(ex ** 2 + ey ** 2))
-        print(f"RMS XY (skip {args.skip_sec:.1f}s, no lag corr): {rms_xy:.3f}")
+        ez = za_i - zr_i          # usa ref z dal topic
+        # se la quota di riferimento è SEMPRE 5 m, usa invece:
+        # ez = za_i - 5.0
 
-        # lag per axis and lag-corrected RMS
+        # RMS (senza correzione di lag)
+        rms_xy  = np.sqrt(np.mean(ex**2 + ey**2))
+        rms_z   = np.sqrt(np.mean(ez**2))
+        rms_xyz = np.sqrt(np.mean(ex**2 + ey**2 + ez**2))
+        print(f"RMS XY   (skip {args.skip_sec:.1f}s, no lag corr): {rms_xy:.3f} m")
+        print(f"RMS Z    (skip {args.skip_sec:.1f}s, no lag corr): {rms_z:.3f} m")
+        print(f"RMS XYZ  (skip {args.skip_sec:.1f}s, no lag corr): {rms_xyz:.3f} m")
+
+        # stima lag XY e RMS corretti
         dt_x = estimate_lag(tt, xr_i, xa_i)
         dt_y = estimate_lag(tt, yr_i, ya_i)
         dt = 0.5 * (dt_x + dt_y)
+
         xr_s = np.interp(tt, t_r + dt, xr)
         yr_s = np.interp(tt, t_r + dt, yr)
+        zr_s = np.interp(tt, t_r + dt, zr)
+
         ex2 = xa_i - xr_s
         ey2 = ya_i - yr_s
-        rms_xy_lag = np.sqrt(np.mean(ex2 ** 2 + ey2 ** 2))
-        print(f"Estimated lag dt_x={dt_x:.3f}s dt_y={dt_y:.3f}s  → avg dt={dt:.3f}s")
-        print(f"RMS XY (skip {args.skip_sec:.1f}s, lag-corrected): {rms_xy_lag:.3f}")
+        ez2 = za_i - zr_s       # o za_i - 5.0 se usi quota costante
+
+        rms_xy_lag  = np.sqrt(np.mean(ex2**2 + ey2**2))
+        rms_xyz_lag = np.sqrt(np.mean(ex2**2 + ey2**2 + ez2**2))
+
+        print(f"Estimated lag dt_x={dt_x:.3f}s dt_y={dt_y:.3f}s → avg dt={dt:.3f}s")
+        print(f"RMS XY   (skip {args.skip_sec:.1f}s, lag-corr): {rms_xy_lag:.3f} m")
+        print(f"RMS XYZ  (skip {args.skip_sec:.1f}s, lag-corr): {rms_xyz_lag:.3f} m")
+
+        # --- NUOVO: plot degli errori nel tempo ---
+        fig_e, axe = plt.subplots(3, 1, figsize=(12, 6), sharex=True)
+
+        axe[0].plot(tt, ex, label="e_x = x - x_ref")
+        axe[0].axhline(0.0, linestyle="--", linewidth=0.8)
+        axe[0].set_ylabel("e_x [m]")
+        axe[0].grid(True)
+        axe[0].legend(loc="best")
+
+        axe[1].plot(tt, ey, label="e_y = y - y_ref")
+        axe[1].axhline(0.0, linestyle="--", linewidth=0.8)
+        axe[1].set_ylabel("e_y [m]")
+        axe[1].grid(True)
+        axe[1].legend(loc="best")
+
+        axe[2].plot(tt, ez, label="e_z = z - z_ref")
+        axe[2].axhline(0.0, linestyle="--", linewidth=0.8)
+        axe[2].set_ylabel("e_z [m]")
+        axe[2].set_xlabel("t [s]")
+        axe[2].grid(True)
+        axe[2].legend(loc="best")
+
+        axe[2].set_xlim(0.0, tmax_plot)
+        fig_e.suptitle("Position tracking error vs time")
+        fig_e.tight_layout(rect=[0, 0.03, 1, 0.97])
+
 
         # time plots
         plt.figure(figsize=(12, 5))
@@ -447,6 +495,36 @@ def main():
 
             U = np.vstack((u1_i, u2_i, u3_i, u4_i)).T     # shape (N_grid, 4)
             sat_segments = find_saturation_segments(tt, U)
+                        # ---------- quantitative metrics for dir_cos ----------
+            # basic stats
+            dc_mean = np.mean(dc_i)
+            dc_std  = np.std(dc_i)
+            dc_min  = np.min(dc_i)
+            dc_max  = np.max(dc_i)
+
+            p1, p5, p50, p95, p99 = np.percentile(dc_i, [1, 5, 50, 95, 99])
+
+            # thresholds
+            frac_ge_099  = np.mean(dc_i >= 0.99)
+            frac_ge_0995 = np.mean(dc_i >= 0.995)
+
+            # approximate misalignment angle statistics
+            dc_clip = np.clip(dc_i, -1.0, 1.0)
+            theta   = np.arccos(dc_clip)           # [rad]
+            theta_rms = np.sqrt(np.mean(theta**2))
+            theta_max = np.max(theta)
+
+            print("\nDirectional cosine metrics over actuator interval:")
+            print(f"  dir_cos mean      = {dc_mean:.4f}")
+            print(f"  dir_cos std       = {dc_std:.4f}")
+            print(f"  dir_cos min, max  = {dc_min:.4f}, {dc_max:.4f}")
+            print(f"  percentiles [1,5,50,95,99] = "
+                  f"{p1:.4f}, {p5:.4f}, {p50:.4f}, {p95:.4f}, {p99:.4f}")
+            print(f"  time frac dir_cos >= 0.99  = {100.0*frac_ge_099:5.1f}%")
+            print(f"  time frac dir_cos >= 0.995 = {100.0*frac_ge_0995:5.1f}%")
+            print(f"  RMS misalignment angle = {np.degrees(theta_rms):.3f} deg")
+            print(f"  max misalignment angle = {np.degrees(theta_max):.3f} deg")
+
 
             fig_act, ax = plt.subplots(2, 1, figsize=(12, 6), sharex=True)
 
@@ -474,19 +552,44 @@ def main():
             # x-axis limit 0..min(50, T_end)
             ax[1].set_xlim(0.0, tmax_plot)
 
+                        # build a boolean mask for saturation, to reuse for metrics and plot
+            sat_mask = np.zeros_like(tt, dtype=bool)
+            for t0_seg, t1_seg in sat_segments:
+                sat_mask |= (tt >= t0_seg) & (tt <= t1_seg)
+
             # highlight saturation regions on both panels
             for (t0_seg, t1_seg) in sat_segments:
                 for a in ax:
-                    a.axvspan(t0_seg, t1_seg, alpha=0.15)   # light band where any motor is saturated
+                    a.axvspan(t0_seg, t1_seg, alpha=0.15)
 
             # additionally emphasize dir_cos during saturation
             if sat_segments:
-                sat_mask = np.zeros_like(tt, dtype=bool)
-                for t0_seg, t1_seg in sat_segments:
-                    sat_mask |= (tt >= t0_seg) & (tt <= t1_seg)
                 ax[1].scatter(tt[sat_mask], dc_i[sat_mask], s=10)
 
+                # metrics in and out of saturation
+                dc_sat    = dc_i[sat_mask]
+                dc_nosat  = dc_i[~sat_mask]
+                if dc_sat.size > 0:
+                    dc_sat_mean   = np.mean(dc_sat)
+                    dc_nosat_mean = np.mean(dc_nosat) if dc_nosat.size > 0 else np.nan
+
+                    theta_sat   = np.arccos(np.clip(dc_sat, -1.0, 1.0))
+                    theta_nosat = np.arccos(np.clip(dc_nosat, -1.0, 1.0)) if dc_nosat.size > 0 else None
+                    theta_sat_rms   = np.sqrt(np.mean(theta_sat**2))
+                    theta_nosat_rms = np.sqrt(np.mean(theta_nosat**2)) if theta_nosat is not None else np.nan
+
+                    frac_time_sat = np.mean(sat_mask)
+
+                    print("\nDirectional cosine vs saturation:")
+                    print(f"  time in saturation           = {100.0*frac_time_sat:5.1f}%")
+                    print(f"  mean dir_cos in saturation   = {dc_sat_mean:.4f}")
+                    print(f"  mean dir_cos outside sat     = {dc_nosat_mean:.4f}")
+                    print(f"  RMS angle in saturation      = {np.degrees(theta_sat_rms):.3f} deg")
+                    if theta_nosat is not None:
+                        print(f"  RMS angle outside saturation = {np.degrees(theta_nosat_rms):.3f} deg")
+
             fig_act.tight_layout()
+
 
     plt.show()
 
